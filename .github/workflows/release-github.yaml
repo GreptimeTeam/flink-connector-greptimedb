@@ -1,0 +1,51 @@
+name: Release To GitHub Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Override project version before publish, for example 0.1.0
+        required: false
+        type: string
+      skip_tests:
+        description: Skip Maven tests during release
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Override Maven project version
+        if: ${{ inputs.version != '' }}
+        run: mvn -B -ntp versions:set -DnewVersion="${{ inputs.version }}" -DgenerateBackupPoms=false
+
+      - name: Verify project
+        if: ${{ !inputs.skip_tests }}
+        run: mvn -B -ntp test
+
+      - name: Publish to GitHub Packages
+        run: >
+          mvn -B -ntp deploy
+          -DskipTests=${{ inputs.skip_tests }}
+          -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
