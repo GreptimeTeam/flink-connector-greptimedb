@@ -37,9 +37,9 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GreptimeSinkWriter.class);
 
-    private final GreptimeDB greptimeDb;
     private final BulkStreamWriter writer;
     private final GreptimeRecordSerializer<T> recordSerializer;
+    private final Runnable shutdownGreptimeDb;
     private final int batchSize;
     private final Queue<CompletableFuture<Integer>> pendingWrites;
 
@@ -52,9 +52,17 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
             BulkStreamWriter writer,
             GreptimeRecordSerializer<T> recordSerializer,
             int batchSize) {
-        this.greptimeDb = greptimeDb;
+        this(writer, recordSerializer, batchSize, greptimeDb::shutdownGracefully);
+    }
+
+    GreptimeSinkWriter(
+            BulkStreamWriter writer,
+            GreptimeRecordSerializer<T> recordSerializer,
+            int batchSize,
+            Runnable shutdownGreptimeDb) {
         this.writer = writer;
         this.recordSerializer = recordSerializer;
+        this.shutdownGreptimeDb = shutdownGreptimeDb;
         this.batchSize = batchSize;
         this.buffer = writer.tableBufferRoot(batchSize);
         this.accumulatedRows = 0;
@@ -193,12 +201,11 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      */
     @Override
     public void close() throws Exception {
-        try {
+        try (BulkStreamWriter ignored = writer) {
             flush(false);
             writer.completed();
-            writer.close();
         } finally {
-            greptimeDb.shutdownGracefully();
+            shutdownGreptimeDb.run();
         }
     }
 }
