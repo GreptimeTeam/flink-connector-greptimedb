@@ -26,9 +26,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
+import java.util.Iterator;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 
 final class GreptimeSinkWriter<T> implements SinkWriter<T> {
 
@@ -42,6 +45,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
 
     private Table.TableBufferRoot buffer;
     private int accumulatedRows;
+    private final AtomicReference<Throwable> asyncWriteFailure;
 
     GreptimeSinkWriter(
             GreptimeDB greptimeDb,
@@ -55,6 +59,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         this.buffer = writer.tableBufferRoot(batchSize);
         this.accumulatedRows = 0;
         this.pendingWrites = new ArrayDeque<>();
+        this.asyncWriteFailure = new AtomicReference<>();
     }
 
     /**
@@ -62,6 +67,9 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      */
     @Override
     public void write(T element, Context context) {
+        checkAsyncWriteFailure();
+        pruneCompletedPendingWrites();
+
         Object[] row = recordSerializer.serialize(element);
         buffer.addRow(row);
         accumulatedRows++;
@@ -76,11 +84,15 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      */
     @Override
     public void flush(boolean endOfInput) {
+        checkAsyncWriteFailure();
         submitBuffer();
         waitForPendingWrites();
     }
 
     void submitBuffer() {
+        checkAsyncWriteFailure();
+        pruneCompletedPendingWrites();
+
         if (accumulatedRows == 0) {
             return;
         }
@@ -88,21 +100,24 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         buffer.complete();
 
         long start = System.currentTimeMillis();
+        CompletableFuture<Integer> future;
         try {
-            CompletableFuture<Integer> future = writer.writeNext().whenComplete((rows, e) -> {
+            future = writer.writeNext().whenComplete((rows, e) -> {
                 if (e != null) {
+                    recordAsyncWriteFailure(e);
                     LOGGER.error("Failed to write batch", e);
                 } else if (LOGGER.isDebugEnabled()) {
                     LOGGER.debug("Inserted {} rows, time cost: {} millis", rows, System.currentTimeMillis() - start);
                 }
             });
-            pendingWrites.add(future);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
 
+        pendingWrites.add(future);
         buffer = writer.tableBufferRoot(batchSize);
         accumulatedRows = 0;
+        pruneCompletedPendingWrites();
     }
 
     void waitForPendingWrites() {
@@ -114,9 +129,63 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException(e);
             } catch (ExecutionException e) {
-                throw new RuntimeException(e);
+                Throwable failure = unwrapAsyncWriteFailure(e);
+                recordAsyncWriteFailure(failure);
+                throw asyncWriteFailureException(failure);
             }
         }
+
+        checkAsyncWriteFailure();
+    }
+
+    void pruneCompletedPendingWrites() {
+        Iterator<CompletableFuture<Integer>> iterator = pendingWrites.iterator();
+        while (iterator.hasNext()) {
+            CompletableFuture<Integer> future = iterator.next();
+            if (!future.isDone()) {
+                continue;
+            }
+
+            try {
+                future.get();
+                iterator.remove();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            } catch (ExecutionException e) {
+                iterator.remove();
+                Throwable failure = unwrapAsyncWriteFailure(e);
+                recordAsyncWriteFailure(failure);
+                throw asyncWriteFailureException(failure);
+            }
+        }
+    }
+
+    int pendingWritesSize() {
+        return pendingWrites.size();
+    }
+
+    private void recordAsyncWriteFailure(Throwable failure) {
+        asyncWriteFailure.compareAndSet(null, unwrapAsyncWriteFailure(failure));
+    }
+
+    private void checkAsyncWriteFailure() {
+        Throwable failure = asyncWriteFailure.get();
+        if (failure != null) {
+            throw asyncWriteFailureException(failure);
+        }
+    }
+
+    private RuntimeException asyncWriteFailureException(Throwable failure) {
+        return new RuntimeException("Async write to GreptimeDB failed", failure);
+    }
+
+    private Throwable unwrapAsyncWriteFailure(Throwable failure) {
+        while ((failure instanceof CompletionException || failure instanceof ExecutionException)
+                && failure.getCause() != null) {
+            failure = failure.getCause();
+        }
+        return failure;
     }
 
     /**
