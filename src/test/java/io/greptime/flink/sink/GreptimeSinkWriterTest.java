@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -73,8 +74,9 @@ class GreptimeSinkWriterTest {
     void shouldCloseBulkWriterWhenCloseTimeFlushFails() throws Exception {
         FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
         RuntimeException failure = new RuntimeException("write failed");
+        AtomicBoolean shutdownCalled = new AtomicBoolean();
         bulkWriter.enqueueWrite(failedFuture(failure));
-        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 2);
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 2, () -> shutdownCalled.set(true));
 
         sinkWriter.write("first", sinkContext());
 
@@ -83,6 +85,7 @@ class GreptimeSinkWriterTest {
         assertSame(failure, thrown.getCause());
         assertFalse(bulkWriter.completed);
         assertTrue(bulkWriter.closed);
+        assertTrue(shutdownCalled.get());
     }
 
     @Test
@@ -102,12 +105,19 @@ class GreptimeSinkWriterTest {
     }
 
     private static GreptimeSinkWriter<String> newSinkWriter(FakeBulkStreamWriter bulkWriter, int batchSize) {
+        return newSinkWriter(bulkWriter, batchSize, () -> {
+        });
+    }
+
+    private static GreptimeSinkWriter<String> newSinkWriter(
+            FakeBulkStreamWriter bulkWriter,
+            int batchSize,
+            Runnable shutdownGreptimeDb) {
         return new GreptimeSinkWriter<>(
                 bulkWriter,
                 value -> new Object[] { value },
                 batchSize,
-                () -> {
-                });
+                shutdownGreptimeDb);
     }
 
     private static SinkWriter.Context sinkContext() {
