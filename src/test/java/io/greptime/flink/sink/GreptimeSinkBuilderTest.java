@@ -96,4 +96,20 @@ class GreptimeSinkBuilderTest {
     void shouldRejectInvalidBatchSize() {
         assertThrows(IllegalArgumentException.class, () -> GreptimeSink.<String>builder().batchSize(0));
     }
+
+    @Test
+    void shouldRejectBlankAuthUsername() {
+        assertThrows(IllegalArgumentException.class,
+                () -> GreptimeSink.<String>builder().plainTextAuth("", "secret"));
+        assertThrows(IllegalArgumentException.class,
+                () -> GreptimeSink.<String>builder().plainTextAuth("   ", "secret"));
+    }
+
+    @Test
+    void shouldRejectBlankAuthPassword() {
+        assertThrows(IllegalArgumentException.class,
+                () -> GreptimeSink.<String>builder().plainTextAuth("user", ""));
+        assertThrows(IllegalArgumentException.class,
+                () -> GreptimeSink.<String>builder().plainTextAuth("user", "   "));
+    }
 }

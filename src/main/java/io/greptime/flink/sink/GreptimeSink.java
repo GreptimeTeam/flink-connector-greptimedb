@@ -81,7 +81,7 @@ public final class GreptimeSink<T> implements Sink<T> {
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         GreptimeOptions.Builder optionsBuilder = GreptimeOptions.newBuilder(endpoint, database);
-        if (StringUtils.isNotEmpty(username)) {
+        if (username != null) {
             optionsBuilder.authInfo(new AuthInfo(username, password));
         }
 
@@ -249,8 +249,16 @@ public final class GreptimeSink<T> implements Sink<T> {
          * @return this builder
          */
         public Builder<T> plainTextAuth(String username, String password) {
-            this.username = Objects.requireNonNull(username, "username must not be null");
-            this.password = Objects.requireNonNull(password, "password must not be null");
+            Objects.requireNonNull(username, "username must not be null");
+            Objects.requireNonNull(password, "password must not be null");
+            if (StringUtils.isBlank(username)) {
+                throw new IllegalArgumentException("username must not be blank");
+            }
+            if (StringUtils.isBlank(password)) {
+                throw new IllegalArgumentException("password must not be blank");
+            }
+            this.username = username;
+            this.password = password;
             return this;
         }
 
