@@ -28,10 +28,13 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GreptimeSinkWriterTest {
 
@@ -68,6 +71,24 @@ class GreptimeSinkWriterTest {
     }
 
     @Test
+    void shouldCloseBulkWriterWhenCloseTimeFlushFails() throws Exception {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        RuntimeException failure = new RuntimeException("write failed");
+        AtomicBoolean shutdownCalled = new AtomicBoolean();
+        bulkWriter.enqueueWrite(failedFuture(failure));
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 2, () -> shutdownCalled.set(true));
+
+        sinkWriter.write("first", sinkContext());
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, sinkWriter::close);
+        assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
+        assertSame(failure, thrown.getCause());
+        assertFalse(bulkWriter.completed);
+        assertTrue(bulkWriter.closed);
+        assertTrue(shutdownCalled.get());
+    }
+
+    @Test
     void shouldPruneCompletedPendingWritesOnWrite() {
         FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
         CompletableFuture<Integer> firstWrite = new CompletableFuture<>();
@@ -84,11 +105,19 @@ class GreptimeSinkWriterTest {
     }
 
     private static GreptimeSinkWriter<String> newSinkWriter(FakeBulkStreamWriter bulkWriter, int batchSize) {
+        return newSinkWriter(bulkWriter, batchSize, () -> {
+        });
+    }
+
+    private static GreptimeSinkWriter<String> newSinkWriter(
+            FakeBulkStreamWriter bulkWriter,
+            int batchSize,
+            Runnable shutdownGreptimeDb) {
         return new GreptimeSinkWriter<>(
-                null,
                 bulkWriter,
                 value -> new Object[] { value },
-                batchSize);
+                batchSize,
+                shutdownGreptimeDb);
     }
 
     private static SinkWriter.Context sinkContext() {
@@ -114,6 +143,8 @@ class GreptimeSinkWriterTest {
     private static final class FakeBulkStreamWriter implements BulkStreamWriter {
 
         private final Queue<CompletableFuture<Integer>> writes = new ArrayDeque<>();
+        private boolean completed;
+        private boolean closed;
 
         void enqueueWrite(CompletableFuture<Integer> future) {
             writes.add(future);
@@ -135,10 +166,12 @@ class GreptimeSinkWriterTest {
 
         @Override
         public void completed() {
+            completed = true;
         }
 
         @Override
         public void close() {
+            closed = true;
         }
     }
 
