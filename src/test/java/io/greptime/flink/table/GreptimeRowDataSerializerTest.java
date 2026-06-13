@@ -18,6 +18,12 @@
 
 package io.greptime.flink.table;
 
+import io.greptime.models.ArrowHelper;
+import io.greptime.models.Table;
+import io.greptime.models.TableSchema;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
@@ -118,6 +124,39 @@ class GreptimeRowDataSerializerTest {
     }
 
     @Test
+    void shouldWriteSerializedValuesIntoIngesterTableBuffer() {
+        ResolvedSchema schema = resolvedSchema(List.of(
+                Column.physical("tiny_col", DataTypes.TINYINT()),
+                Column.physical("small_col", DataTypes.SMALLINT()),
+                Column.physical("date_col", DataTypes.DATE()),
+                Column.physical("decimal_col", DataTypes.DECIMAL(10, 2)),
+                Column.physical("time_col", DataTypes.TIME(6)),
+                Column.physical("ts_col", DataTypes.TIMESTAMP(9).notNull())));
+        TableSchema tableSchema = GreptimeTableSchemaConverter.convert(
+                schema,
+                options("metrics", "ts_col", List.of()));
+        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema);
+        GenericRowData row = GenericRowData.of(
+                (byte) 7,
+                (short) 8,
+                19_724,
+                DecimalData.fromBigDecimal(new BigDecimal("123.45"), 10, 2),
+                12_345,
+                TimestampData.fromLocalDateTime(LocalDateTime.of(2024, 1, 2, 3, 4, 5, 123_456_789)));
+
+        try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+                VectorSchemaRoot root = VectorSchemaRoot.create(ArrowHelper.createSchema(tableSchema), allocator)) {
+            Table.TableBufferRoot buffer = Table.tableBufferRoot(tableSchema, root, 1);
+
+            buffer.addRow(serializer.serialize(row));
+            buffer.complete();
+
+            assertEquals(1, buffer.rowCount());
+            assertEquals(6, buffer.columnCount());
+        }
+    }
+
+    @Test
     void shouldPreserveNullValues() {
         ResolvedSchema schema = resolvedSchema(List.of(
                 Column.physical("text_col", DataTypes.STRING()),
@@ -189,6 +228,18 @@ class GreptimeRowDataSerializerTest {
 
     private static ResolvedSchema resolvedSchema(List<Column> columns) {
         return new ResolvedSchema(columns, List.of(), null);
+    }
+
+    private static GreptimeTableSinkOptions options(String table, String timeIndex, List<String> tags) {
+        return new GreptimeTableSinkOptions(
+                List.of("127.0.0.1:4001"),
+                timeIndex,
+                GreptimeConnectorOptions.DEFAULT_DATABASE,
+                table,
+                null,
+                null,
+                tags,
+                GreptimeConnectorOptions.DEFAULT_BATCH_MAX_ROWS);
     }
 
     private static long toEpochMicros(Instant instant) {
