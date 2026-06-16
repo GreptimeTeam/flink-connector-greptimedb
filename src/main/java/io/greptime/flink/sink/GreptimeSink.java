@@ -29,6 +29,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -39,7 +40,7 @@ import java.util.Objects;
  */
 public final class GreptimeSink<T> implements Sink<T> {
 
-    private final String endpoint;
+    private final List<String> endpoints;
     private final String database;
     private final GreptimeTableSchema tableSchema;
     private final GreptimeRecordSerializer<T> recordSerializer;
@@ -52,7 +53,7 @@ public final class GreptimeSink<T> implements Sink<T> {
     private final String password;
 
     private GreptimeSink(Builder<T> builder) {
-        this.endpoint = builder.endpoint;
+        this.endpoints = builder.endpoints;
         this.database = builder.database;
         this.tableSchema = GreptimeTableSchema.from(builder.tableSchema);
         this.recordSerializer = builder.recordSerializer;
@@ -80,7 +81,9 @@ public final class GreptimeSink<T> implements Sink<T> {
      */
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-        GreptimeOptions.Builder optionsBuilder = GreptimeOptions.newBuilder(endpoint, database);
+        GreptimeOptions.Builder optionsBuilder = GreptimeOptions.newBuilder(
+                endpoints.toArray(new String[0]),
+                database);
         if (username != null) {
             optionsBuilder.authInfo(new AuthInfo(username, password));
         }
@@ -110,7 +113,7 @@ public final class GreptimeSink<T> implements Sink<T> {
         private static final String DEFAULT_DATABASE = "public";
         private static final int DEFAULT_BATCH_SIZE = 1_000;
 
-        private String endpoint;
+        private List<String> endpoints = List.of();
         private String database = DEFAULT_DATABASE;
         private TableSchema tableSchema;
         private GreptimeRecordSerializer<T> recordSerializer;
@@ -132,7 +135,26 @@ public final class GreptimeSink<T> implements Sink<T> {
          * @return this builder
          */
         public Builder<T> endpoint(String endpoint) {
-            this.endpoint = Objects.requireNonNull(endpoint, "endpoint must not be null");
+            return endpoints(List.of(Objects.requireNonNull(endpoint, "endpoint must not be null")));
+        }
+
+        /**
+         * Configures the GreptimeDB ingester endpoints.
+         *
+         * @param endpoints the ingester endpoints, for example {@code 127.0.0.1:4001}
+         * @return this builder
+         */
+        public Builder<T> endpoints(List<String> endpoints) {
+            Objects.requireNonNull(endpoints, "endpoints must not be null");
+            if (endpoints.isEmpty()) {
+                throw new IllegalArgumentException("endpoints must not be empty");
+            }
+            for (String endpoint : endpoints) {
+                if (StringUtils.isBlank(endpoint)) {
+                    throw new IllegalArgumentException("endpoint must not be blank");
+                }
+            }
+            this.endpoints = List.copyOf(endpoints);
             return this;
         }
 
@@ -268,7 +290,7 @@ public final class GreptimeSink<T> implements Sink<T> {
          * @return the configured GreptimeDB sink
          */
         public GreptimeSink<T> build() {
-            if (StringUtils.isBlank(endpoint)) {
+            if (endpoints.isEmpty()) {
                 throw new IllegalStateException("endpoint must be configured");
             }
             if (StringUtils.isBlank(database)) {

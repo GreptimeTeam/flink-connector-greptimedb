@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectOutputStream;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -41,6 +42,17 @@ class GreptimeSinkBuilderTest {
     void shouldBuildSinkWithRequiredFields() {
         GreptimeSink<String> sink = GreptimeSink.<String>builder()
                 .endpoint("127.0.0.1:4001")
+                .tableSchema(TABLE_SCHEMA)
+                .recordSerializer(value -> new Object[] { 1L, "host-1", Double.parseDouble(value) })
+                .build();
+
+        assertNotNull(sink);
+    }
+
+    @Test
+    void shouldBuildSinkWithMultipleEndpoints() {
+        GreptimeSink<String> sink = GreptimeSink.<String>builder()
+                .endpoints(List.of("127.0.0.1:4001", "127.0.0.2:4001"))
                 .tableSchema(TABLE_SCHEMA)
                 .recordSerializer(value -> new Object[] { 1L, "host-1", Double.parseDouble(value) })
                 .build();
@@ -85,11 +97,34 @@ class GreptimeSinkBuilderTest {
     }
 
     @Test
+    void shouldBuildSerializableSinkWithMultipleEndpoints() throws Exception {
+        GreptimeSink<String> sink = GreptimeSink.<String>builder()
+                .endpoints(List.of("127.0.0.1:4001", "127.0.0.2:4001"))
+                .tableSchema(TABLE_SCHEMA)
+                .recordSerializer(value -> new Object[] { 1L, "host-1", Double.parseDouble(value) })
+                .build();
+
+        try (ObjectOutputStream output = new ObjectOutputStream(new ByteArrayOutputStream())) {
+            output.writeObject(sink);
+        }
+    }
+
+    @Test
     void shouldRejectMissingEndpoint() {
         assertThrows(IllegalStateException.class, () -> GreptimeSink.<String>builder()
                 .tableSchema(TABLE_SCHEMA)
                 .recordSerializer(value -> new Object[] { 1L, "host-1", Double.parseDouble(value) })
                 .build());
+    }
+
+    @Test
+    void shouldRejectInvalidEndpoints() {
+        assertThrows(NullPointerException.class, () -> GreptimeSink.<String>builder().endpoints(null));
+        assertThrows(IllegalArgumentException.class, () -> GreptimeSink.<String>builder().endpoints(List.of()));
+        assertThrows(NullPointerException.class, () -> GreptimeSink.<String>builder().endpoint(null));
+        assertThrows(IllegalArgumentException.class, () -> GreptimeSink.<String>builder().endpoint(""));
+        assertThrows(IllegalArgumentException.class,
+                () -> GreptimeSink.<String>builder().endpoints(List.of("127.0.0.1:4001", " ")));
     }
 
     @Test
