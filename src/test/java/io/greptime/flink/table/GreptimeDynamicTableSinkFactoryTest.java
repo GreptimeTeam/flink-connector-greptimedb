@@ -250,6 +250,15 @@ class GreptimeDynamicTableSinkFactoryTest {
     }
 
     @Test
+    void shouldRejectNullableTimeIndex() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> createSink(baseOptions(), "metrics", resolvedSchemaWithNullableTimestamp()));
+
+        assertEquals("time-index column must not be nullable: ts", error.getMessage());
+    }
+
+    @Test
     void shouldAcceptTimestampLtzTimeIndex() {
         Map<String, String> options = baseOptions();
         GreptimeDynamicTableSink sink = createSink(options, "metrics", resolvedSchemaWithTimestampLtz());
@@ -332,6 +341,17 @@ class GreptimeDynamicTableSinkFactoryTest {
                         Column.physical("region", DataTypes.STRING()),
                         Column.physical("usage", DataTypes.DOUBLE()),
                         Column.physical("ts", DataTypes.TIMESTAMP_LTZ(3).notNull())),
+                List.of(),
+                null);
+    }
+
+    private static ResolvedSchema resolvedSchemaWithNullableTimestamp() {
+        return new ResolvedSchema(
+                List.of(
+                        Column.physical("host", DataTypes.STRING()),
+                        Column.physical("region", DataTypes.STRING()),
+                        Column.physical("usage", DataTypes.DOUBLE()),
+                        Column.physical("ts", DataTypes.TIMESTAMP(3))),
                 List.of(),
                 null);
     }

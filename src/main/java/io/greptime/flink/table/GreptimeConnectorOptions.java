@@ -156,6 +156,9 @@ final class GreptimeConnectorOptions {
             throw new IllegalArgumentException(
                     "time-index column must be TIMESTAMP or TIMESTAMP_LTZ, but was: " + timeIndexType);
         }
+        if (timeIndexType.isNullable()) {
+            throw new IllegalArgumentException("time-index column must not be nullable: " + timeIndex);
+        }
 
         for (String tag : tags) {
             if (tag.equals(timeIndex)) {
