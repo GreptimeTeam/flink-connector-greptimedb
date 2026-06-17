@@ -27,7 +27,20 @@ import org.apache.flink.table.factories.FactoryUtil;
 
 import java.util.Set;
 
-final class GreptimeDynamicTableSinkFactory implements DynamicTableSinkFactory {
+/**
+ * Factory that creates GreptimeDB dynamic table sinks for Flink SQL.
+ *
+ * <p>Registered through {@code META-INF/services} so that Flink can discover it
+ * via {@code 'connector' = 'greptimedb'}; this requires a public class with a
+ * public no-arg constructor.
+ */
+public final class GreptimeDynamicTableSinkFactory implements DynamicTableSinkFactory {
+
+    /**
+     * Creates a GreptimeDB dynamic table sink factory.
+     */
+    public GreptimeDynamicTableSinkFactory() {
+    }
 
     @Override
     public String factoryIdentifier() {
