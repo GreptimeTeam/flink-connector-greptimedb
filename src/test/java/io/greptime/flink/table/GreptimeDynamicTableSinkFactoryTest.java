@@ -18,6 +18,8 @@
 
 package io.greptime.flink.table;
 
+import io.greptime.flink.sink.GreptimeSink;
+import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
@@ -30,10 +32,15 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DynamicTableFactory;
 import org.apache.flink.types.RowKind;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectOutputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -286,11 +293,40 @@ class GreptimeDynamicTableSinkFactoryTest {
     }
 
     @Test
-    void shouldKeepSinkInternalUntilRuntimeIsImplemented() {
-        GreptimeDynamicTableSink sink = createSink(baseOptions(), "metrics");
+    void shouldCreateSinkV2RuntimeProvider() throws Exception {
+        Map<String, String> options = baseOptions();
+        options.put(GreptimeConnectorOptions.DATABASE.key(), "metrics_db");
+        options.put(GreptimeConnectorOptions.USERNAME.key(), "greptime");
+        options.put(GreptimeConnectorOptions.PASSWORD.key(), "secret");
+        options.put(GreptimeConnectorOptions.TAGS.key(), "host,region");
+        options.put(GreptimeConnectorOptions.BATCH_MAX_ROWS.key(), "128");
 
-        assertInstanceOf(GreptimeDynamicTableSink.class, sink.copy());
+        GreptimeDynamicTableSink sink = createSink(options, "metrics");
+
+        assertRuntimeSinkSerializable(sink);
+        assertRuntimeSinkSerializable(sink.copy());
         assertEquals("GreptimeDB Table Sink", sink.asSummaryString());
+    }
+
+    @Test
+    void shouldCreateRuntimeProviderWithMultipleEndpoints() throws Exception {
+        Map<String, String> options = baseOptions();
+        options.put(GreptimeConnectorOptions.ENDPOINTS.key(), "127.0.0.1:4001,127.0.0.2:4001");
+
+        GreptimeDynamicTableSink sink = createSink(options, "metrics");
+
+        assertEquals(List.of("127.0.0.1:4001", "127.0.0.2:4001"), sink.options().endpoints());
+        assertRuntimeSinkSerializable(sink);
+    }
+
+    private static void assertRuntimeSinkSerializable(DynamicTableSink sink) throws Exception {
+        SinkV2Provider provider = assertInstanceOf(SinkV2Provider.class, sink.getSinkRuntimeProvider(null));
+        Sink<RowData> runtimeSink = provider.createSink();
+
+        assertInstanceOf(GreptimeSink.class, runtimeSink);
+        try (ObjectOutputStream output = new ObjectOutputStream(new ByteArrayOutputStream())) {
+            output.writeObject(runtimeSink);
+        }
     }
 
     private static void assertOptionError(String key, String value, String expectedMessage) {

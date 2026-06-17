@@ -18,15 +18,24 @@
 
 package io.greptime.flink.table;
 
+import io.greptime.flink.sink.GreptimeSink;
+import io.greptime.models.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.catalog.ResolvedSchema;
+
+import java.util.Objects;
 
 final class GreptimeDynamicTableSink implements DynamicTableSink {
 
     private final GreptimeTableSinkOptions options;
+    private final ResolvedSchema schema;
 
-    GreptimeDynamicTableSink(GreptimeTableSinkOptions options) {
-        this.options = options;
+    GreptimeDynamicTableSink(GreptimeTableSinkOptions options, ResolvedSchema schema) {
+        this.options = Objects.requireNonNull(options, "options must not be null");
+        this.schema = Objects.requireNonNull(schema, "schema must not be null");
     }
 
     GreptimeTableSinkOptions options() {
@@ -40,12 +49,26 @@ final class GreptimeDynamicTableSink implements DynamicTableSink {
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-        throw new UnsupportedOperationException("GreptimeDB Table sink runtime is not implemented yet");
+        TableSchema tableSchema = GreptimeTableSchemaConverter.convert(schema, options);
+        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema);
+
+        GreptimeSink.Builder<RowData> builder = GreptimeSink.<RowData>builder()
+                .endpoints(options.endpoints())
+                .database(options.database())
+                .tableSchema(tableSchema)
+                .recordSerializer(serializer)
+                .batchSize(options.batchMaxRows());
+
+        if (options.username() != null) {
+            builder.plainTextAuth(options.username(), options.password());
+        }
+
+        return SinkV2Provider.of(builder.build());
     }
 
     @Override
     public DynamicTableSink copy() {
-        return new GreptimeDynamicTableSink(options);
+        return new GreptimeDynamicTableSink(options, schema);
     }
 
     @Override

@@ -20,6 +20,7 @@ package io.greptime.flink.table;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -55,9 +56,11 @@ final class GreptimeDynamicTableSinkFactory implements DynamicTableSinkFactory {
 
         ReadableConfig options = helper.getOptions();
         String table = context.getObjectIdentifier().getObjectName();
+        ResolvedSchema resolvedSchema = context.getCatalogTable().getResolvedSchema();
         return new GreptimeDynamicTableSink(GreptimeConnectorOptions.createSinkOptions(
                 options,
                 table,
-                context.getCatalogTable().getResolvedSchema()));
+                resolvedSchema),
+                resolvedSchema);
     }
 }
