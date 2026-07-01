@@ -14,6 +14,8 @@
 
 ## Usage
 
+### DataStream Sink Usage
+
 ```java
 import io.greptime.flink.sink.GreptimeSink;
 import io.greptime.models.DataType;
@@ -56,6 +58,61 @@ GreptimeSink<CpuMetric> sink = GreptimeSink.<CpuMetric>builder()
         .build();
 ```
 
+### SQL/Table Sink Usage
+
+The connector also provides an insert-only SQL/Table sink for writing Flink table rows into GreptimeDB.
+The time-index column must be a non-null `TIMESTAMP` or `TIMESTAMP_LTZ` column. Flink timestamp columns are nullable by default, so declare the time-index column with `NOT NULL`.
+
+```sql
+CREATE TEMPORARY TABLE cpu_metrics (
+    ts TIMESTAMP(3) NOT NULL,
+    host STRING,
+    usage DOUBLE
+) WITH (
+    'connector' = 'greptimedb',
+    'endpoints' = '127.0.0.1:4001',
+    'database' = 'public',
+    'table' = 'cpu_metrics',
+    'time-index' = 'ts',
+    'tags' = 'host',
+    'batch.max-rows' = '1000'
+);
+
+INSERT INTO cpu_metrics VALUES
+    (TIMESTAMP '2024-01-02 03:04:05.000', 'host-a', 0.42);
+```
+
+#### SQL/Table Sink Options
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `connector` | Yes | Must be `greptimedb`. |
+| `endpoints` | Yes | Comma-separated GreptimeDB ingester endpoints. |
+| `time-index` | Yes | Name of the non-null timestamp column used as the GreptimeDB time index. |
+| `database` | No | GreptimeDB database. Defaults to `public`. |
+| `table` | No | GreptimeDB table name. Defaults to the Flink table identifier. |
+| `username` | No | GreptimeDB username. Configure together with `password`. |
+| `password` | No | GreptimeDB password. Configure together with `username`. |
+| `tags` | No | Comma-separated column names to write as GreptimeDB tag columns. |
+| `batch.max-rows` | No | Maximum rows per write batch. Defaults to `1000`. |
+
+#### Delivery Guarantee
+
+The SQL/Table sink currently provides at-least-once delivery. Failed writes, job retries, or recovery can produce duplicate writes, so design GreptimeDB tables and downstream queries to accept that semantic.
+The connector does not provide an exactly-once commit protocol.
+
+#### Unsupported Features
+
+The SQL/Table connector currently does not support:
+
+* SQL/Table source
+* Lookup source
+* CDC or streaming source
+* Update, delete, or retract changelog rows
+* Primary-key upsert semantics
+* Automatic table creation or auto-DDL
+* Exactly-once commit protocol
+
 ## Local Build
 
 ```bash
@@ -76,6 +133,12 @@ To run only the GreptimeDB sink integration test:
 
 ```bash
 mvn -Pintegration-test -Dit.test=GreptimeSinkIT verify
+```
+
+To run only the GreptimeDB SQL/Table sink integration test:
+
+```bash
+mvn -Pintegration-test -Dit.test=GreptimeDynamicTableSinkIT verify
 ```
 
 To test against a different GreptimeDB image:
