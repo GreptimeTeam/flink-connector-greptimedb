@@ -120,6 +120,18 @@ mvn test
 mvn package
 ```
 
+`mvn package` produces both the regular connector jar and an attached shaded jar:
+
+* `target/flink-connector-greptimedb-${version}.jar` is the thin jar for Maven-based applications.
+* `target/flink-connector-greptimedb-${version}-shaded.jar` is the deployment jar for Flink SQL Client or cluster classpath usage. It bundles and relocates the GreptimeDB Java ingester runtime dependencies while keeping Flink dependencies provided by the Flink runtime.
+
+Use the shaded jar when loading the connector directly in Flink SQL Client:
+
+```bash
+./bin/sql-client.sh embedded \
+    -j /path/to/flink-connector-greptimedb-${version}-shaded.jar
+```
+
 ## Integration Test
 
 Integration tests are isolated behind the `integration-test` Maven profile and require Docker.
