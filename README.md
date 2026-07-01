@@ -61,8 +61,7 @@ GreptimeSink<CpuMetric> sink = GreptimeSink.<CpuMetric>builder()
 ### SQL/Table Sink Usage
 
 The connector also provides an insert-only SQL/Table sink for writing Flink table rows into GreptimeDB.
-The time-index column must be a non-null `TIMESTAMP` or `TIMESTAMP_LTZ` column. Flink timestamp columns
-are nullable by default, so declare the time-index column with `NOT NULL`.
+The time-index column must be a non-null `TIMESTAMP` or `TIMESTAMP_LTZ` column. Flink timestamp columns are nullable by default, so declare the time-index column with `NOT NULL`.
 
 ```sql
 CREATE TEMPORARY TABLE cpu_metrics (
@@ -99,8 +98,7 @@ INSERT INTO cpu_metrics VALUES
 
 #### Delivery Guarantee
 
-The SQL/Table sink currently provides at-least-once delivery. Failed writes, job retries, or recovery
-can produce duplicate writes, so design GreptimeDB tables and downstream queries to accept that semantic.
+The SQL/Table sink currently provides at-least-once delivery. Failed writes, job retries, or recovery can produce duplicate writes, so design GreptimeDB tables and downstream queries to accept that semantic.
 The connector does not provide an exactly-once commit protocol.
 
 #### Unsupported Features
