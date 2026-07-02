@@ -197,8 +197,6 @@ under the License.
                                 <excludes>
                                     <exclude>org.apache.flink:*</exclude>
                                     <exclude>org.slf4j:slf4j-api</exclude>
-                                    <exclude>org.apache.commons:commons-compress</exclude>
-                                    <exclude>commons-io:commons-io</exclude>
                                     <exclude>com.google.code.findbugs:jsr305</exclude>
                                 </excludes>
                             </artifactSet>
