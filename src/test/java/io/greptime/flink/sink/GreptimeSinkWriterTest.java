@@ -30,7 +30,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -164,6 +167,88 @@ class GreptimeSinkWriterTest {
     }
 
     @Test
+    void shouldBlockConcurrentWriteWhileFlushCompletesStream() throws Exception {
+        RecordingBulkStreamWriterFactory writerFactory = new RecordingBulkStreamWriterFactory();
+        AtomicBoolean observeSerializer = new AtomicBoolean();
+        CountDownLatch serializerEntered = new CountDownLatch(1);
+        GreptimeSinkWriter<String> sinkWriter = new GreptimeSinkWriter<>(
+                writerFactory,
+                value -> {
+                    if (observeSerializer.get()) {
+                        serializerEntered.countDown();
+                    }
+                    return new Object[] { value };
+                },
+                2,
+                () -> {
+                });
+        CountDownLatch completedStarted = new CountDownLatch(1);
+        CountDownLatch allowCompleted = new CountDownLatch(1);
+        AtomicBoolean writeFinished = new AtomicBoolean();
+        AtomicReference<Throwable> flushFailure = new AtomicReference<>();
+        AtomicReference<Throwable> writeFailure = new AtomicReference<>();
+        CountDownLatch writeStarted = new CountDownLatch(1);
+
+        sinkWriter.write("first", sinkContext());
+        writerFactory.writers.get(0).blockCompleted(completedStarted, allowCompleted);
+
+        Thread flushThread = new Thread(() -> {
+            try {
+                sinkWriter.flush(false);
+            } catch (Throwable t) {
+                flushFailure.set(t);
+            }
+        }, "greptime-sink-flush-test");
+        flushThread.start();
+        assertTrue(completedStarted.await(5, TimeUnit.SECONDS));
+
+        observeSerializer.set(true);
+        Thread writeThread = new Thread(() -> {
+            try {
+                writeStarted.countDown();
+                sinkWriter.write("second", sinkContext());
+                writeFinished.set(true);
+            } catch (Throwable t) {
+                writeFailure.set(t);
+            }
+        }, "greptime-sink-write-test");
+        writeThread.start();
+
+        try {
+            assertTrue(writeStarted.await(5, TimeUnit.SECONDS));
+            awaitBlocked(writeThread);
+            assertEquals(1, serializerEntered.getCount());
+            assertFalse(writeFinished.get());
+            assertEquals(1, writerFactory.writers.size());
+        } finally {
+            allowCompleted.countDown();
+        }
+
+        flushThread.join(5_000);
+        writeThread.join(5_000);
+
+        assertFalse(flushThread.isAlive());
+        assertFalse(writeThread.isAlive());
+        if (flushFailure.get() != null) {
+            throw new AssertionError("Flush failed", flushFailure.get());
+        }
+        if (writeFailure.get() != null) {
+            throw new AssertionError("Write failed", writeFailure.get());
+        }
+        assertTrue(serializerEntered.await(5, TimeUnit.SECONDS));
+
+        sinkWriter.flush(false);
+
+        assertEquals(2, writerFactory.writers.size());
+        FakeBulkStreamWriter firstWriter = writerFactory.writers.get(0);
+        FakeBulkStreamWriter secondWriter = writerFactory.writers.get(1);
+        assertEquals(List.of(1), firstWriter.writeRows);
+        assertEquals(List.of(1), secondWriter.writeRows);
+        assertTrue(firstWriter.completed);
+        assertTrue(secondWriter.completed);
+    }
+
+    @Test
     void shouldCompleteStreamAndShutdownClientOnClose() throws Exception {
         FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
         AtomicBoolean shutdownCalled = new AtomicBoolean();
@@ -279,6 +364,16 @@ class GreptimeSinkWriterTest {
         return future;
     }
 
+    private static void awaitBlocked(Thread thread) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.isAlive()
+                && thread.getState() != Thread.State.BLOCKED
+                && System.nanoTime() < deadlineNanos) {
+            Thread.sleep(10);
+        }
+        assertEquals(Thread.State.BLOCKED, thread.getState());
+    }
+
     private static final class RecordingBulkStreamWriterFactory implements GreptimeSinkWriter.BulkStreamWriterFactory {
 
         private final List<FakeBulkStreamWriter> writers = new ArrayList<>();
@@ -311,6 +406,8 @@ class GreptimeSinkWriterTest {
         private final List<Integer> writeRows = new ArrayList<>();
         private FakeTableBufferRoot currentTable;
         private RuntimeException writeNextFailure;
+        private CountDownLatch completedStarted;
+        private CountDownLatch allowCompleted;
         private boolean completed;
         private boolean closed;
 
@@ -320,6 +417,11 @@ class GreptimeSinkWriterTest {
 
         void failWriteNext(RuntimeException failure) {
             this.writeNextFailure = failure;
+        }
+
+        void blockCompleted(CountDownLatch completedStarted, CountDownLatch allowCompleted) {
+            this.completedStarted = completedStarted;
+            this.allowCompleted = allowCompleted;
         }
 
         @Override
@@ -343,6 +445,17 @@ class GreptimeSinkWriterTest {
 
         @Override
         public void completed() {
+            if (completedStarted != null) {
+                completedStarted.countDown();
+            }
+            if (allowCompleted != null) {
+                try {
+                    allowCompleted.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            }
             completed = true;
             closed = true;
         }

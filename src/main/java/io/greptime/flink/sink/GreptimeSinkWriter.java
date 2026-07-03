@@ -84,7 +84,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      * {@inheritDoc}
      */
     @Override
-    public void write(T element, Context context) {
+    public synchronized void write(T element, Context context) {
         ensureOpenForWrite();
         checkAsyncWriteFailure();
         pruneCompletedPendingWrites();
@@ -103,7 +103,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      * {@inheritDoc}
      */
     @Override
-    public void flush(boolean endOfInput) {
+    public synchronized void flush(boolean endOfInput) {
         if (completed || closed) {
             return;
         }
@@ -143,7 +143,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         streamHasData = false;
     }
 
-    void submitBuffer() {
+    private void submitBuffer() {
         checkAsyncWriteFailure();
         pruneCompletedPendingWrites();
 
@@ -176,7 +176,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         pruneCompletedPendingWrites();
     }
 
-    void waitForPendingWrites() {
+    private void waitForPendingWrites() {
         CompletableFuture<Integer> future;
         while ((future = pendingWrites.poll()) != null) {
             try {
@@ -194,7 +194,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         checkAsyncWriteFailure();
     }
 
-    void pruneCompletedPendingWrites() {
+    private void pruneCompletedPendingWrites() {
         Iterator<CompletableFuture<Integer>> iterator = pendingWrites.iterator();
         while (iterator.hasNext()) {
             CompletableFuture<Integer> future = iterator.next();
@@ -217,7 +217,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         }
     }
 
-    int pendingWritesSize() {
+    synchronized int pendingWritesSize() {
         return pendingWrites.size();
     }
 
@@ -255,7 +255,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      * {@inheritDoc}
      */
     @Override
-    public void close() throws Exception {
+    public synchronized void close() throws Exception {
         if (closed) {
             return;
         }
