@@ -26,6 +26,8 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -89,6 +91,132 @@ class GreptimeSinkWriterTest {
     }
 
     @Test
+    void shouldReportUnobservedAsyncWriteFailureOnCloseAndCleanup() throws Exception {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        CompletableFuture<Integer> firstWrite = new CompletableFuture<>();
+        RuntimeException failure = new RuntimeException("write failed");
+        AtomicBoolean shutdownCalled = new AtomicBoolean();
+        bulkWriter.enqueueWrite(firstWrite);
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 1, () -> shutdownCalled.set(true));
+
+        sinkWriter.write("first", sinkContext());
+        firstWrite.completeExceptionally(failure);
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, sinkWriter::close);
+        assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
+        assertSame(failure, thrown.getCause());
+        assertFalse(bulkWriter.completed);
+        assertTrue(bulkWriter.closed);
+        assertTrue(shutdownCalled.get());
+    }
+
+    @Test
+    void shouldCompleteCurrentStreamOnCheckpointFlushAndOpenNextStream() {
+        RecordingBulkStreamWriterFactory writerFactory = new RecordingBulkStreamWriterFactory();
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(writerFactory, 2);
+
+        sinkWriter.write("first", sinkContext());
+        sinkWriter.flush(false);
+        sinkWriter.write("second", sinkContext());
+        sinkWriter.flush(false);
+
+        assertEquals(2, writerFactory.writers.size());
+        FakeBulkStreamWriter firstWriter = writerFactory.writers.get(0);
+        FakeBulkStreamWriter secondWriter = writerFactory.writers.get(1);
+        assertEquals(List.of(1), firstWriter.writeRows);
+        assertEquals(List.of(1), secondWriter.writeRows);
+        assertTrue(firstWriter.completed);
+        assertTrue(secondWriter.completed);
+        assertTrue(firstWriter.closed);
+        assertTrue(secondWriter.closed);
+    }
+
+    @Test
+    void shouldCompletePreviouslySubmittedStreamOnCheckpointFlush() {
+        RecordingBulkStreamWriterFactory writerFactory = new RecordingBulkStreamWriterFactory();
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(writerFactory, 1);
+
+        sinkWriter.write("first", sinkContext());
+        sinkWriter.flush(false);
+
+        assertEquals(1, writerFactory.writers.size());
+        FakeBulkStreamWriter writer = writerFactory.writers.get(0);
+        assertEquals(List.of(1), writer.writeRows);
+        assertTrue(writer.completed);
+        assertTrue(writer.closed);
+    }
+
+    @Test
+    void shouldCompleteStreamOnEndOfInputAndRejectFurtherWrites() {
+        RecordingBulkStreamWriterFactory writerFactory = new RecordingBulkStreamWriterFactory();
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(writerFactory, 2);
+
+        sinkWriter.write("first", sinkContext());
+        sinkWriter.flush(true);
+
+        FakeBulkStreamWriter writer = writerFactory.writers.get(0);
+        assertEquals(List.of(1), writer.writeRows);
+        assertTrue(writer.completed);
+        assertTrue(writer.closed);
+        IllegalStateException thrown =
+                assertThrows(IllegalStateException.class, () -> sinkWriter.write("second", sinkContext()));
+        assertEquals("GreptimeDB sink writer is not open", thrown.getMessage());
+    }
+
+    @Test
+    void shouldCompleteStreamAndShutdownClientOnClose() throws Exception {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        AtomicBoolean shutdownCalled = new AtomicBoolean();
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 2, () -> shutdownCalled.set(true));
+
+        sinkWriter.write("first", sinkContext());
+        sinkWriter.close();
+
+        assertEquals(List.of(1), bulkWriter.writeRows);
+        assertTrue(bulkWriter.completed);
+        assertTrue(bulkWriter.closed);
+        assertTrue(shutdownCalled.get());
+    }
+
+    @Test
+    void shouldCleanupCloseAfterFlushFailure() throws Exception {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        RuntimeException failure = new RuntimeException("write failed");
+        AtomicBoolean shutdownCalled = new AtomicBoolean();
+        bulkWriter.enqueueWrite(failedFuture(failure));
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 2, () -> shutdownCalled.set(true));
+
+        sinkWriter.write("first", sinkContext());
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> sinkWriter.flush(false));
+        sinkWriter.close();
+
+        assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
+        assertSame(failure, thrown.getCause());
+        assertFalse(bulkWriter.completed);
+        assertTrue(bulkWriter.closed);
+        assertTrue(shutdownCalled.get());
+    }
+
+    @Test
+    void shouldCleanupCloseAfterSynchronousFlushFailure() throws Exception {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        RuntimeException failure = new RuntimeException("write failed");
+        AtomicBoolean shutdownCalled = new AtomicBoolean();
+        bulkWriter.failWriteNext(failure);
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriter(bulkWriter, 2, () -> shutdownCalled.set(true));
+
+        sinkWriter.write("first", sinkContext());
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> sinkWriter.flush(false));
+        sinkWriter.close();
+
+        assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
+        assertSame(failure, thrown.getCause());
+        assertFalse(bulkWriter.completed);
+        assertTrue(bulkWriter.closed);
+        assertTrue(shutdownCalled.get());
+    }
+
+    @Test
     void shouldPruneCompletedPendingWritesOnWrite() {
         FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
         CompletableFuture<Integer> firstWrite = new CompletableFuture<>();
@@ -110,11 +238,22 @@ class GreptimeSinkWriterTest {
     }
 
     private static GreptimeSinkWriter<String> newSinkWriter(
+            RecordingBulkStreamWriterFactory writerFactory,
+            int batchSize) {
+        return new GreptimeSinkWriter<>(
+                writerFactory,
+                value -> new Object[] { value },
+                batchSize,
+                () -> {
+                });
+    }
+
+    private static GreptimeSinkWriter<String> newSinkWriter(
             FakeBulkStreamWriter bulkWriter,
             int batchSize,
             Runnable shutdownGreptimeDb) {
         return new GreptimeSinkWriter<>(
-                bulkWriter,
+                new SingleBulkStreamWriterFactory(bulkWriter),
                 value -> new Object[] { value },
                 batchSize,
                 shutdownGreptimeDb);
@@ -140,9 +279,38 @@ class GreptimeSinkWriterTest {
         return future;
     }
 
+    private static final class RecordingBulkStreamWriterFactory implements GreptimeSinkWriter.BulkStreamWriterFactory {
+
+        private final List<FakeBulkStreamWriter> writers = new ArrayList<>();
+
+        @Override
+        public BulkStreamWriter create() {
+            FakeBulkStreamWriter writer = new FakeBulkStreamWriter();
+            writers.add(writer);
+            return writer;
+        }
+    }
+
+    private static final class SingleBulkStreamWriterFactory implements GreptimeSinkWriter.BulkStreamWriterFactory {
+
+        private final FakeBulkStreamWriter writer;
+
+        private SingleBulkStreamWriterFactory(FakeBulkStreamWriter writer) {
+            this.writer = writer;
+        }
+
+        @Override
+        public BulkStreamWriter create() {
+            return writer;
+        }
+    }
+
     private static final class FakeBulkStreamWriter implements BulkStreamWriter {
 
         private final Queue<CompletableFuture<Integer>> writes = new ArrayDeque<>();
+        private final List<Integer> writeRows = new ArrayList<>();
+        private FakeTableBufferRoot currentTable;
+        private RuntimeException writeNextFailure;
         private boolean completed;
         private boolean closed;
 
@@ -150,16 +318,25 @@ class GreptimeSinkWriterTest {
             writes.add(future);
         }
 
+        void failWriteNext(RuntimeException failure) {
+            this.writeNextFailure = failure;
+        }
+
         @Override
         public Table.TableBufferRoot tableBufferRoot(int maxRows) {
-            return new FakeTableBufferRoot();
+            currentTable = new FakeTableBufferRoot();
+            return currentTable;
         }
 
         @Override
         public CompletableFuture<Integer> writeNext() {
+            if (writeNextFailure != null) {
+                throw writeNextFailure;
+            }
+            writeRows.add(currentTable.rowCount());
             CompletableFuture<Integer> future = writes.poll();
             if (future == null) {
-                return CompletableFuture.completedFuture(1);
+                return CompletableFuture.completedFuture(currentTable.rowCount());
             }
             return future;
         }
@@ -167,6 +344,7 @@ class GreptimeSinkWriterTest {
         @Override
         public void completed() {
             completed = true;
+            closed = true;
         }
 
         @Override
