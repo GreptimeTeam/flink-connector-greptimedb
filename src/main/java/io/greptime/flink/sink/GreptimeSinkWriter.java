@@ -37,35 +37,45 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GreptimeSinkWriter.class);
 
-    private final BulkStreamWriter writer;
+    private final BulkStreamWriterFactory writerFactory;
     private final GreptimeRecordSerializer<T> recordSerializer;
     private final Runnable shutdownGreptimeDb;
     private final int batchSize;
     private final Queue<CompletableFuture<Integer>> pendingWrites;
 
+    private BulkStreamWriter writer;
     private Table.TableBufferRoot buffer;
     private int accumulatedRows;
+    private boolean streamHasData;
+    private boolean completed;
+    private boolean closed;
+    private boolean asyncWriteFailureObserved;
     private final AtomicReference<Throwable> asyncWriteFailure;
 
     GreptimeSinkWriter(
             GreptimeDB greptimeDb,
-            BulkStreamWriter writer,
+            BulkStreamWriterFactory writerFactory,
             GreptimeRecordSerializer<T> recordSerializer,
             int batchSize) {
-        this(writer, recordSerializer, batchSize, greptimeDb::shutdownGracefully);
+        this(writerFactory, recordSerializer, batchSize, greptimeDb::shutdownGracefully);
     }
 
     GreptimeSinkWriter(
-            BulkStreamWriter writer,
+            BulkStreamWriterFactory writerFactory,
             GreptimeRecordSerializer<T> recordSerializer,
             int batchSize,
             Runnable shutdownGreptimeDb) {
-        this.writer = writer;
+        this.writerFactory = writerFactory;
         this.recordSerializer = recordSerializer;
         this.shutdownGreptimeDb = shutdownGreptimeDb;
         this.batchSize = batchSize;
-        this.buffer = writer.tableBufferRoot(batchSize);
+        this.writer = null;
+        this.buffer = null;
         this.accumulatedRows = 0;
+        this.streamHasData = false;
+        this.completed = false;
+        this.closed = false;
+        this.asyncWriteFailureObserved = false;
         this.pendingWrites = new ArrayDeque<>();
         this.asyncWriteFailure = new AtomicReference<>();
     }
@@ -74,11 +84,13 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      * {@inheritDoc}
      */
     @Override
-    public void write(T element, Context context) {
+    public synchronized void write(T element, Context context) {
+        ensureOpenForWrite();
         checkAsyncWriteFailure();
         pruneCompletedPendingWrites();
 
         Object[] row = recordSerializer.serialize(element);
+        ensureWriter();
         buffer.addRow(row);
         accumulatedRows++;
 
@@ -91,13 +103,47 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
      * {@inheritDoc}
      */
     @Override
-    public void flush(boolean endOfInput) {
+    public synchronized void flush(boolean endOfInput) {
+        if (completed || closed) {
+            return;
+        }
         checkAsyncWriteFailure();
-        submitBuffer();
-        waitForPendingWrites();
+        completeCurrentStream();
+        if (endOfInput) {
+            completed = true;
+        }
     }
 
-    void submitBuffer() {
+    private void ensureWriter() {
+        if (writer == null) {
+            writer = writerFactory.create();
+        }
+        if (buffer == null) {
+            buffer = writer.tableBufferRoot(batchSize);
+        }
+    }
+
+    private void completeCurrentStream() {
+        submitBuffer();
+        waitForPendingWrites();
+        if (!streamHasData) {
+            return;
+        }
+
+        try {
+            writer.completed();
+        } catch (Exception e) {
+            recordAsyncWriteFailure(e);
+            throw asyncWriteFailureException(e);
+        }
+
+        writer = null;
+        buffer = null;
+        accumulatedRows = 0;
+        streamHasData = false;
+    }
+
+    private void submitBuffer() {
         checkAsyncWriteFailure();
         pruneCompletedPendingWrites();
 
@@ -119,16 +165,18 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
                 }
             });
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            recordAsyncWriteFailure(e);
+            throw asyncWriteFailureException(e);
         }
 
         pendingWrites.add(future);
-        buffer = writer.tableBufferRoot(batchSize);
+        streamHasData = true;
+        buffer = null;
         accumulatedRows = 0;
         pruneCompletedPendingWrites();
     }
 
-    void waitForPendingWrites() {
+    private void waitForPendingWrites() {
         CompletableFuture<Integer> future;
         while ((future = pendingWrites.poll()) != null) {
             try {
@@ -146,7 +194,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         checkAsyncWriteFailure();
     }
 
-    void pruneCompletedPendingWrites() {
+    private void pruneCompletedPendingWrites() {
         Iterator<CompletableFuture<Integer>> iterator = pendingWrites.iterator();
         while (iterator.hasNext()) {
             CompletableFuture<Integer> future = iterator.next();
@@ -169,7 +217,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         }
     }
 
-    int pendingWritesSize() {
+    synchronized int pendingWritesSize() {
         return pendingWrites.size();
     }
 
@@ -185,6 +233,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
     }
 
     private RuntimeException asyncWriteFailureException(Throwable failure) {
+        asyncWriteFailureObserved = true;
         return new RuntimeException("Async write to GreptimeDB failed", failure);
     }
 
@@ -196,16 +245,77 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         return failure;
     }
 
+    private void ensureOpenForWrite() {
+        if (completed || closed) {
+            throw new IllegalStateException("GreptimeDB sink writer is not open");
+        }
+    }
+
     /**
      * {@inheritDoc}
      */
     @Override
-    public void close() throws Exception {
-        try (BulkStreamWriter ignored = writer) {
-            flush(false);
-            writer.completed();
-        } finally {
-            shutdownGreptimeDb.run();
+    public synchronized void close() throws Exception {
+        if (closed) {
+            return;
         }
+
+        Exception failure = null;
+        try {
+            Throwable asyncFailure = asyncWriteFailure.get();
+            if (asyncFailure != null) {
+                if (!asyncWriteFailureObserved) {
+                    failure = asyncWriteFailureException(asyncFailure);
+                }
+            } else if (!completed) {
+                try {
+                    completeCurrentStream();
+                } catch (Exception e) {
+                    failure = e;
+                }
+            }
+        } finally {
+            Exception cleanupFailure = cleanupResources();
+            closed = true;
+            if (failure != null) {
+                if (cleanupFailure != null) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+                throw failure;
+            }
+            if (cleanupFailure != null) {
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private Exception cleanupResources() {
+        Exception failure = null;
+        if (writer != null) {
+            try {
+                writer.close();
+            } catch (Exception e) {
+                failure = e;
+            } finally {
+                writer = null;
+                buffer = null;
+            }
+        }
+
+        try {
+            shutdownGreptimeDb.run();
+        } catch (RuntimeException e) {
+            if (failure == null) {
+                failure = e;
+            } else {
+                failure.addSuppressed(e);
+            }
+        }
+        return failure;
+    }
+
+    @FunctionalInterface
+    interface BulkStreamWriterFactory {
+        BulkStreamWriter create();
     }
 }
