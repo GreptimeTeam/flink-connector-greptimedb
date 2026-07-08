@@ -22,15 +22,20 @@ import io.greptime.BulkStreamWriter;
 import io.greptime.GreptimeDB;
 import io.greptime.models.Table;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class GreptimeSinkWriter<T> implements SinkWriter<T> {
@@ -41,11 +46,13 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
     private final GreptimeRecordSerializer<T> recordSerializer;
     private final Runnable shutdownGreptimeDb;
     private final int batchSize;
-    private final Queue<CompletableFuture<Integer>> pendingWrites;
+    private final Queue<PendingWrite> pendingWrites;
+    private final AtomicInteger activePendingWrites;
+    private final GreptimeSinkWriterMetrics metrics;
 
     private BulkStreamWriter writer;
     private Table.TableBufferRoot buffer;
-    private int accumulatedRows;
+    private volatile int accumulatedRows;
     private boolean streamHasData;
     private boolean completed;
     private boolean closed;
@@ -57,7 +64,16 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
             BulkStreamWriterFactory writerFactory,
             GreptimeRecordSerializer<T> recordSerializer,
             int batchSize) {
-        this(writerFactory, recordSerializer, batchSize, greptimeDb::shutdownGracefully);
+        this(greptimeDb, writerFactory, recordSerializer, batchSize, null);
+    }
+
+    GreptimeSinkWriter(
+            GreptimeDB greptimeDb,
+            BulkStreamWriterFactory writerFactory,
+            GreptimeRecordSerializer<T> recordSerializer,
+            int batchSize,
+            SinkWriterMetricGroup metricGroup) {
+        this(writerFactory, recordSerializer, batchSize, greptimeDb::shutdownGracefully, metricGroup);
     }
 
     GreptimeSinkWriter(
@@ -65,10 +81,22 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
             GreptimeRecordSerializer<T> recordSerializer,
             int batchSize,
             Runnable shutdownGreptimeDb) {
+        this(writerFactory, recordSerializer, batchSize, shutdownGreptimeDb, null);
+    }
+
+    GreptimeSinkWriter(
+            BulkStreamWriterFactory writerFactory,
+            GreptimeRecordSerializer<T> recordSerializer,
+            int batchSize,
+            Runnable shutdownGreptimeDb,
+            SinkWriterMetricGroup metricGroup) {
         this.writerFactory = writerFactory;
         this.recordSerializer = recordSerializer;
         this.shutdownGreptimeDb = shutdownGreptimeDb;
         this.batchSize = batchSize;
+        this.pendingWrites = new ArrayDeque<>();
+        this.activePendingWrites = new AtomicInteger();
+        this.asyncWriteFailure = new AtomicReference<>();
         this.writer = null;
         this.buffer = null;
         this.accumulatedRows = 0;
@@ -76,8 +104,8 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         this.completed = false;
         this.closed = false;
         this.asyncWriteFailureObserved = false;
-        this.pendingWrites = new ArrayDeque<>();
-        this.asyncWriteFailure = new AtomicReference<>();
+        this.metrics =
+                GreptimeSinkWriterMetrics.create(metricGroup, this::bufferedRowsSize, this::activePendingWritesSize);
     }
 
     /**
@@ -151,25 +179,29 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
             return;
         }
 
+        int rows = accumulatedRows;
         buffer.complete();
 
-        long start = System.currentTimeMillis();
-        CompletableFuture<Integer> future;
+        long startNanos = System.nanoTime();
+        PendingWrite pendingWrite;
         try {
-            future = writer.writeNext().whenComplete((rows, e) -> {
-                if (e != null) {
-                    recordAsyncWriteFailure(e);
-                    LOGGER.error("Failed to write batch", e);
-                } else if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("Inserted {} rows, time cost: {} millis", rows, System.currentTimeMillis() - start);
-                }
-            });
+            CompletableFuture<Integer> future =
+                    Objects.requireNonNull(writer.writeNext(), "write future must not be null");
+            pendingWrite = new PendingWrite(future, rows, startNanos);
         } catch (Exception e) {
+            metrics.recordFlushFailure(rows, elapsedMillis(startNanos));
             recordAsyncWriteFailure(e);
             throw asyncWriteFailureException(e);
         }
 
-        pendingWrites.add(future);
+        pendingWrites.add(pendingWrite);
+        activePendingWrites.incrementAndGet();
+        pendingWrite.future().whenComplete((affectedRows, e) -> {
+            if (pendingWrite.markCompleted()) {
+                activePendingWrites.decrementAndGet();
+            }
+        });
+        metrics.recordFlushSubmitted(rows);
         streamHasData = true;
         buffer = null;
         accumulatedRows = 0;
@@ -177,43 +209,50 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
     }
 
     private void waitForPendingWrites() {
-        CompletableFuture<Integer> future;
-        while ((future = pendingWrites.poll()) != null) {
-            try {
-                future.get();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException(e);
-            } catch (ExecutionException e) {
-                Throwable failure = unwrapAsyncWriteFailure(e);
-                recordAsyncWriteFailure(failure);
-                throw asyncWriteFailureException(failure);
-            }
+        PendingWrite pendingWrite;
+        while ((pendingWrite = pendingWrites.poll()) != null) {
+            recordCompletedPendingWrite(pendingWrite);
         }
 
         checkAsyncWriteFailure();
     }
 
     private void pruneCompletedPendingWrites() {
-        Iterator<CompletableFuture<Integer>> iterator = pendingWrites.iterator();
+        Iterator<PendingWrite> iterator = pendingWrites.iterator();
         while (iterator.hasNext()) {
-            CompletableFuture<Integer> future = iterator.next();
-            if (!future.isDone()) {
+            PendingWrite pendingWrite = iterator.next();
+            if (!pendingWrite.isDone()) {
                 continue;
             }
 
-            try {
-                future.get();
-                iterator.remove();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException(e);
-            } catch (ExecutionException e) {
-                iterator.remove();
-                Throwable failure = unwrapAsyncWriteFailure(e);
-                recordAsyncWriteFailure(failure);
-                throw asyncWriteFailureException(failure);
+            iterator.remove();
+            recordCompletedPendingWrite(pendingWrite);
+        }
+    }
+
+    private void recordCompletedPendingWrite(PendingWrite pendingWrite) {
+        try {
+            int affectedRows = pendingWrite.get();
+            if (pendingWrite.markCompleted()) {
+                activePendingWrites.decrementAndGet();
             }
+            long durationMs = pendingWrite.durationMs();
+            metrics.recordFlushSuccess(pendingWrite.rows(), durationMs);
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("Inserted {} rows, time cost: {} millis", affectedRows, durationMs);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        } catch (ExecutionException e) {
+            Throwable failure = unwrapAsyncWriteFailure(e);
+            if (pendingWrite.markCompleted()) {
+                activePendingWrites.decrementAndGet();
+            }
+            metrics.recordFlushFailure(pendingWrite.rows(), pendingWrite.durationMs());
+            recordAsyncWriteFailure(failure);
+            LOGGER.error("Failed to write batch", failure);
+            throw asyncWriteFailureException(failure);
         }
     }
 
@@ -221,8 +260,22 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         return pendingWrites.size();
     }
 
+    int activePendingWritesSize() {
+        return activePendingWrites.get();
+    }
+
+    int bufferedRowsSize() {
+        return accumulatedRows;
+    }
+
+    GreptimeSinkWriterMetrics metrics() {
+        return metrics;
+    }
+
     private void recordAsyncWriteFailure(Throwable failure) {
-        asyncWriteFailure.compareAndSet(null, unwrapAsyncWriteFailure(failure));
+        if (asyncWriteFailure.compareAndSet(null, unwrapAsyncWriteFailure(failure))) {
+            metrics.recordAsyncWriteFailure();
+        }
     }
 
     private void checkAsyncWriteFailure() {
@@ -243,6 +296,10 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
             failure = failure.getCause();
         }
         return failure;
+    }
+
+    private static long elapsedMillis(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
     private void ensureOpenForWrite() {
@@ -317,5 +374,53 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
     @FunctionalInterface
     interface BulkStreamWriterFactory {
         BulkStreamWriter create();
+    }
+
+    private static final class PendingWrite {
+
+        private final CompletableFuture<Integer> future;
+        private final int rows;
+        private final long startNanos;
+        private final AtomicBoolean completed;
+        private volatile long completionDurationMs = -1;
+
+        private PendingWrite(CompletableFuture<Integer> future, int rows, long startNanos) {
+            this.future = future;
+            this.rows = rows;
+            this.startNanos = startNanos;
+            this.completed = new AtomicBoolean();
+        }
+
+        private boolean markCompleted() {
+            if (!completed.compareAndSet(false, true)) {
+                return false;
+            }
+            completionDurationMs = elapsedMillis(startNanos);
+            return true;
+        }
+
+        private boolean isDone() {
+            return future.isDone();
+        }
+
+        private int get() throws InterruptedException, ExecutionException {
+            return future.get();
+        }
+
+        private CompletableFuture<Integer> future() {
+            return future;
+        }
+
+        private int rows() {
+            return rows;
+        }
+
+        private long durationMs() {
+            long durationMs = completionDurationMs;
+            if (durationMs >= 0) {
+                return durationMs;
+            }
+            return elapsedMillis(startNanos);
+        }
     }
 }
