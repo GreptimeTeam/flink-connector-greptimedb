@@ -50,7 +50,7 @@ final class GreptimeDynamicTableSink implements DynamicTableSink {
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         TableSchema tableSchema = GreptimeTableSchemaConverter.convert(schema, options);
-        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema);
+        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema, options.timeIndex());
 
         GreptimeSink.Builder<RowData> builder = GreptimeSink.<RowData>builder()
                 .endpoints(options.endpoints())

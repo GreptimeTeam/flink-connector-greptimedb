@@ -47,13 +47,32 @@ final class GreptimeRowDataSerializer implements GreptimeRecordSerializer<RowDat
         this.converters = converters;
     }
 
+    /**
+     * Creates a serializer for the given schema without time-index null enforcement.
+     *
+     * @param schema the resolved schema
+     * @return a new serializer
+     */
     static GreptimeRowDataSerializer create(ResolvedSchema schema) {
+        return create(schema, null);
+    }
+
+    /**
+     * Creates a serializer for the given schema with time-index null enforcement.
+     *
+     * @param schema          the resolved schema
+     * @param timeIndexColumn the name of the time-index column, or {@code null} to
+     *                        skip null enforcement
+     * @return a new serializer
+     */
+    static GreptimeRowDataSerializer create(ResolvedSchema schema, String timeIndexColumn) {
         Objects.requireNonNull(schema, "schema must not be null");
         List<Column> columns = GreptimeTableSchemaConverter.physicalColumns(schema);
         FieldConverter[] converters = new FieldConverter[columns.size()];
         for (int i = 0; i < columns.size(); i++) {
             Column column = columns.get(i);
-            converters[i] = createFieldConverter(column.getName(), column.getDataType().getLogicalType(), i);
+            converters[i] = createFieldConverter(
+                    column.getName(), column.getDataType().getLogicalType(), i, timeIndexColumn);
         }
         return new GreptimeRowDataSerializer(converters);
     }
@@ -76,43 +95,46 @@ final class GreptimeRowDataSerializer implements GreptimeRecordSerializer<RowDat
         return values;
     }
 
-    private static FieldConverter createFieldConverter(String columnName, LogicalType logicalType, int index) {
+    private static FieldConverter createFieldConverter(
+            String columnName, LogicalType logicalType, int index, String timeIndexColumn) {
         switch (logicalType.getTypeRoot()) {
             case BOOLEAN:
-                return nullable(index, row -> row.getBoolean(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getBoolean(index));
             case TINYINT:
-                return nullable(index, row -> (int) row.getByte(index));
+                return wrap(columnName, index, timeIndexColumn, row -> (int) row.getByte(index));
             case SMALLINT:
-                return nullable(index, row -> (int) row.getShort(index));
+                return wrap(columnName, index, timeIndexColumn, row -> (int) row.getShort(index));
             case INTEGER:
-                return nullable(index, row -> row.getInt(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getInt(index));
             case BIGINT:
-                return nullable(index, row -> row.getLong(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getLong(index));
             case FLOAT:
-                return nullable(index, row -> row.getFloat(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getFloat(index));
             case DOUBLE:
-                return nullable(index, row -> row.getDouble(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getDouble(index));
             case CHAR:
             case VARCHAR:
-                return nullable(index, row -> row.getString(index).toString());
+                return wrap(columnName, index, timeIndexColumn, row -> row.getString(index).toString());
             case BINARY:
             case VARBINARY:
-                return nullable(index, row -> row.getBinary(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getBinary(index));
             case DATE:
-                return nullable(index, row -> row.getInt(index));
+                return wrap(columnName, index, timeIndexColumn, row -> row.getInt(index));
             case TIME_WITHOUT_TIME_ZONE:
-                return timeConverter(index, ((TimeType) logicalType).getPrecision());
+                return timeConverter(columnName, index, ((TimeType) logicalType).getPrecision(), timeIndexColumn);
             case TIMESTAMP_WITHOUT_TIME_ZONE:
-                return timestampConverter(columnName, index, ((TimestampType) logicalType).getPrecision(), false);
+                return timestampConverter(
+                        columnName, index, ((TimestampType) logicalType).getPrecision(), false, timeIndexColumn);
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 return timestampConverter(
                         columnName,
                         index,
                         ((LocalZonedTimestampType) logicalType).getPrecision(),
-                        true);
+                        true,
+                        timeIndexColumn);
             case DECIMAL:
                 DecimalType decimalType = (DecimalType) logicalType;
-                return nullable(index, row -> toBigDecimal(row.getDecimal(
+                return wrap(columnName, index, timeIndexColumn, row -> toBigDecimal(row.getDecimal(
                         index,
                         decimalType.getPrecision(),
                         decimalType.getScale())));
@@ -121,20 +143,24 @@ final class GreptimeRowDataSerializer implements GreptimeRecordSerializer<RowDat
         }
     }
 
-    private static FieldConverter timeConverter(int index, int precision) {
-        return nullable(index, row -> convertTime(row.getInt(index), precision));
+    private static FieldConverter timeConverter(
+            String columnName, int index, int precision, String timeIndexColumn) {
+        return wrap(columnName, index, timeIndexColumn,
+                row -> convertTime(row.getInt(index), precision));
     }
 
     private static FieldConverter timestampConverter(
             String columnName,
             int index,
             int precision,
-            boolean localTimeZone) {
-        return nullable(index, row -> convertTimestamp(
-                columnName,
-                row.getTimestamp(index, precision),
-                precision,
-                localTimeZone));
+            boolean localTimeZone,
+            String timeIndexColumn) {
+        return wrap(columnName, index, timeIndexColumn,
+                row -> convertTimestamp(
+                        columnName,
+                        row.getTimestamp(index, precision),
+                        precision,
+                        localTimeZone));
     }
 
     private static Object convertTime(int millisOfDay, int precision) {
@@ -193,6 +219,24 @@ final class GreptimeRowDataSerializer implements GreptimeRecordSerializer<RowDat
 
     private static Object toBigDecimal(DecimalData decimal) {
         return decimal.toBigDecimal();
+    }
+
+    private static FieldConverter wrap(
+            String columnName, int index, String timeIndexColumn, FieldConverter converter) {
+        if (columnName.equals(timeIndexColumn)) {
+            return required(columnName, index, converter);
+        }
+        return nullable(index, converter);
+    }
+
+    private static FieldConverter required(String columnName, int index, FieldConverter converter) {
+        return row -> {
+            if (row.isNullAt(index)) {
+                throw new IllegalArgumentException(
+                        "time-index column must not be null: " + columnName);
+            }
+            return converter.convert(row);
+        };
     }
 
     private static FieldConverter nullable(int index, FieldConverter converter) {

@@ -135,7 +135,7 @@ class GreptimeRowDataSerializerTest {
         TableSchema tableSchema = GreptimeTableSchemaConverter.convert(
                 schema,
                 options("metrics", "ts_col", List.of()));
-        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema);
+        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema, "ts_col");
         GenericRowData row = GenericRowData.of(
                 (byte) 7,
                 (short) 8,
@@ -168,6 +168,46 @@ class GreptimeRowDataSerializerTest {
 
         assertNull(values[0]);
         assertNull(values[1]);
+        assertNull(values[2]);
+    }
+
+    @Test
+    void shouldRejectNullTimeIndexValue() {
+        ResolvedSchema schema = resolvedSchema(List.of(
+                Column.physical("host", DataTypes.STRING()),
+                Column.physical("ts", DataTypes.TIMESTAMP(3).notNull()),
+                Column.physical("usage", DataTypes.DOUBLE())));
+        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema, "ts");
+
+        GenericRowData row = GenericRowData.of(
+                StringData.fromString("host-a"),
+                null,
+                0.42);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> serializer.serialize(row));
+
+        assertEquals("time-index column must not be null: ts", error.getMessage());
+    }
+
+    @Test
+    void shouldPreserveNullValuesForNonTimeIndexFields() {
+        ResolvedSchema schema = resolvedSchema(List.of(
+                Column.physical("host", DataTypes.STRING()),
+                Column.physical("ts", DataTypes.TIMESTAMP(3).notNull()),
+                Column.physical("usage", DataTypes.DOUBLE())));
+        GreptimeRowDataSerializer serializer = GreptimeRowDataSerializer.create(schema, "ts");
+
+        GenericRowData row = GenericRowData.of(
+                null,
+                TimestampData.fromLocalDateTime(LocalDateTime.of(2024, 1, 2, 3, 4, 5)),
+                null);
+
+        Object[] values = serializer.serialize(row);
+
+        assertNull(values[0]);
+        assertEquals(LocalDateTime.of(2024, 1, 2, 3, 4, 5).toInstant(ZoneOffset.UTC).toEpochMilli(), values[1]);
         assertNull(values[2]);
     }
 
