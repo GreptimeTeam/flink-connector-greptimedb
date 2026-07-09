@@ -18,6 +18,7 @@
 
 package io.greptime.flink.table;
 
+import io.greptime.BulkWrite;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
@@ -38,6 +39,12 @@ final class GreptimeConnectorOptions {
     static final String IDENTIFIER = "greptimedb";
     static final String DEFAULT_DATABASE = "public";
     static final int DEFAULT_BATCH_MAX_ROWS = 1_000;
+    static final long DEFAULT_BULK_TIMEOUT_MS_PER_MESSAGE = BulkWrite.DEFAULT_TIMEOUT_MS_PER_MESSAGE;
+    static final int DEFAULT_BULK_MAX_REQUESTS_IN_FLIGHT = BulkWrite.DEFAULT_MAX_REQUESTS_IN_FLIGHT;
+    static final long DEFAULT_BULK_ALLOCATOR_INIT_RESERVATION =
+            BulkWrite.DEFAULT_ALLOCATOR_INIT_RESERVATION;
+    static final long DEFAULT_BULK_ALLOCATOR_MAX_ALLOCATION =
+            BulkWrite.DEFAULT_ALLOCATOR_MAX_ALLOCATION;
 
     static final ConfigOption<String> ENDPOINTS =
             ConfigOptions.key("endpoints").stringType().noDefaultValue();
@@ -63,6 +70,26 @@ final class GreptimeConnectorOptions {
     static final ConfigOption<Integer> BATCH_MAX_ROWS =
             ConfigOptions.key("batch.max-rows").intType().defaultValue(DEFAULT_BATCH_MAX_ROWS);
 
+    static final ConfigOption<Long> BULK_TIMEOUT_MS_PER_MESSAGE =
+            ConfigOptions.key("bulk.timeout-ms-per-message")
+                    .longType()
+                    .defaultValue(DEFAULT_BULK_TIMEOUT_MS_PER_MESSAGE);
+
+    static final ConfigOption<Integer> BULK_MAX_REQUESTS_IN_FLIGHT =
+            ConfigOptions.key("bulk.max-requests-in-flight")
+                    .intType()
+                    .defaultValue(DEFAULT_BULK_MAX_REQUESTS_IN_FLIGHT);
+
+    static final ConfigOption<Long> BULK_ALLOCATOR_INIT_RESERVATION =
+            ConfigOptions.key("bulk.allocator-init-reservation-bytes")
+                    .longType()
+                    .defaultValue(DEFAULT_BULK_ALLOCATOR_INIT_RESERVATION);
+
+    static final ConfigOption<Long> BULK_ALLOCATOR_MAX_ALLOCATION =
+            ConfigOptions.key("bulk.allocator-max-allocation-bytes")
+                    .longType()
+                    .defaultValue(DEFAULT_BULK_ALLOCATOR_MAX_ALLOCATION);
+
     private GreptimeConnectorOptions() {
     }
 
@@ -71,7 +98,17 @@ final class GreptimeConnectorOptions {
     }
 
     static Set<ConfigOption<?>> optionalOptions() {
-        return Set.of(DATABASE, TABLE, USERNAME, PASSWORD, TAGS, BATCH_MAX_ROWS);
+        return Set.of(
+                DATABASE,
+                TABLE,
+                USERNAME,
+                PASSWORD,
+                TAGS,
+                BATCH_MAX_ROWS,
+                BULK_TIMEOUT_MS_PER_MESSAGE,
+                BULK_MAX_REQUESTS_IN_FLIGHT,
+                BULK_ALLOCATOR_INIT_RESERVATION,
+                BULK_ALLOCATOR_MAX_ALLOCATION);
     }
 
     static Set<ConfigOption<?>> forwardOptions() {
@@ -90,6 +127,10 @@ final class GreptimeConnectorOptions {
         String password = options.getOptional(PASSWORD).orElse(null);
         List<String> tags = splitListOption(TAGS.key(), options.get(TAGS), true);
         int batchMaxRows = options.get(BATCH_MAX_ROWS);
+        long bulkTimeoutMsPerMessage = options.get(BULK_TIMEOUT_MS_PER_MESSAGE);
+        int bulkMaxRequestsInFlight = options.get(BULK_MAX_REQUESTS_IN_FLIGHT);
+        long bulkAllocatorInitReservation = options.get(BULK_ALLOCATOR_INIT_RESERVATION);
+        long bulkAllocatorMaxAllocation = options.get(BULK_ALLOCATOR_MAX_ALLOCATION);
 
         validateIdentifier(TIME_INDEX.key(), timeIndex);
         validateIdentifier(DATABASE.key(), database);
@@ -97,8 +138,15 @@ final class GreptimeConnectorOptions {
         validateAuthPair(username, password);
         validateTags(tags);
         validateSchema(schema, timeIndex, tags);
-        if (batchMaxRows <= 0) {
-            throw new IllegalArgumentException("`batch.max-rows` must be greater than 0");
+        validatePositive(BATCH_MAX_ROWS.key(), batchMaxRows);
+        validatePositive(BULK_TIMEOUT_MS_PER_MESSAGE.key(), bulkTimeoutMsPerMessage);
+        validatePositive(BULK_MAX_REQUESTS_IN_FLIGHT.key(), bulkMaxRequestsInFlight);
+        validateNonNegative(BULK_ALLOCATOR_INIT_RESERVATION.key(), bulkAllocatorInitReservation);
+        validatePositive(BULK_ALLOCATOR_MAX_ALLOCATION.key(), bulkAllocatorMaxAllocation);
+        if (bulkAllocatorMaxAllocation < bulkAllocatorInitReservation) {
+            throw new IllegalArgumentException(
+                    "`bulk.allocator-max-allocation-bytes` must be greater than or equal to "
+                            + "`bulk.allocator-init-reservation-bytes`");
         }
 
         return new GreptimeTableSinkOptions(
@@ -109,7 +157,23 @@ final class GreptimeConnectorOptions {
                 username,
                 password,
                 tags,
-                batchMaxRows);
+                batchMaxRows,
+                bulkTimeoutMsPerMessage,
+                bulkMaxRequestsInFlight,
+                bulkAllocatorInitReservation,
+                bulkAllocatorMaxAllocation);
+    }
+
+    private static void validatePositive(String key, long value) {
+        if (value <= 0) {
+            throw new IllegalArgumentException("`" + key + "` must be greater than 0");
+        }
+    }
+
+    private static void validateNonNegative(String key, long value) {
+        if (value < 0) {
+            throw new IllegalArgumentException("`" + key + "` must be greater than or equal to 0");
+        }
     }
 
     private static void validateAuthPair(String username, String password) {

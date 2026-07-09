@@ -57,7 +57,14 @@ final class GreptimeDynamicTableSink implements DynamicTableSink {
                 .database(options.database())
                 .tableSchema(tableSchema)
                 .recordSerializer(serializer)
-                .batchSize(options.batchMaxRows());
+                .batchSize(options.batchMaxRows())
+                .timeoutMsPerMessage(options.bulkTimeoutMsPerMessage())
+                .maxRequestsInFlight(options.bulkMaxRequestsInFlight())
+                .allocatorMaxAllocation(options.bulkAllocatorMaxAllocation());
+
+        if (options.bulkAllocatorInitReservation() > 0) {
+            builder.allocatorInitReservation(options.bulkAllocatorInitReservation());
+        }
 
         if (options.username() != null) {
             builder.plainTextAuth(options.username(), options.password());
