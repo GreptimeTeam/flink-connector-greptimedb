@@ -100,7 +100,8 @@ public final class GreptimeSink<T> implements Sink<T> {
                 greptimeDb,
                 () -> greptimeDb.bulkStreamWriter(tableSchema.toTableSchema(), bulkWriteConfig),
                 recordSerializer,
-                batchSize);
+                batchSize,
+                context.metricGroup());
     }
 
     /**
