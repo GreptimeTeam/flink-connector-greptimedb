@@ -30,6 +30,7 @@ import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.Queue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -183,6 +184,7 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         buffer.complete();
 
         long startNanos = System.nanoTime();
+        metrics.recordFlushSubmitted(rows);
         PendingWrite pendingWrite;
         try {
             CompletableFuture<Integer> future =
@@ -201,7 +203,6 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
                 activePendingWrites.decrementAndGet();
             }
         });
-        metrics.recordFlushSubmitted(rows);
         streamHasData = true;
         buffer = null;
         accumulatedRows = 0;
@@ -249,11 +250,20 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
             if (pendingWrite.markCompleted()) {
                 activePendingWrites.decrementAndGet();
             }
-            metrics.recordFlushFailure(pendingWrite.rows(), pendingWrite.durationMs());
-            recordAsyncWriteFailure(failure);
-            LOGGER.error("Failed to write batch", failure);
-            throw asyncWriteFailureException(failure);
+            throw recordCompletedPendingWriteFailure(pendingWrite, failure);
+        } catch (CancellationException e) {
+            if (pendingWrite.markCompleted()) {
+                activePendingWrites.decrementAndGet();
+            }
+            throw recordCompletedPendingWriteFailure(pendingWrite, e);
         }
+    }
+
+    private RuntimeException recordCompletedPendingWriteFailure(PendingWrite pendingWrite, Throwable failure) {
+        metrics.recordFlushFailure(pendingWrite.rows(), pendingWrite.durationMs());
+        recordAsyncWriteFailure(failure);
+        LOGGER.error("Failed to write batch", failure);
+        return asyncWriteFailureException(failure);
     }
 
     synchronized int pendingWritesSize() {

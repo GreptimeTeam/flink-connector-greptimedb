@@ -31,6 +31,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -385,6 +386,28 @@ class GreptimeSinkWriterTest {
     }
 
     @Test
+    void shouldRecordSubmittedMetricsOnSynchronousFlushFailure() {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        RuntimeException failure = new RuntimeException("write failed");
+        bulkWriter.failWriteNext(failure);
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriterWithMetrics(bulkWriter, 2);
+
+        sinkWriter.write("first", sinkContext());
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> sinkWriter.flush(false));
+        assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
+        assertSame(failure, thrown.getCause());
+        assertEquals(1, sinkWriter.metrics().recordsSend());
+        assertEquals(1, sinkWriter.metrics().recordsSendErrors());
+        assertEquals(1, sinkWriter.metrics().flushTotal());
+        assertEquals(0, sinkWriter.metrics().flushSuccessTotal());
+        assertEquals(1, sinkWriter.metrics().flushFailureTotal());
+        assertEquals(0, sinkWriter.metrics().flushRowsTotal());
+        assertEquals(1, sinkWriter.metrics().lastFlushRows());
+        assertEquals(1, sinkWriter.metrics().asyncWriteFailureTotal());
+    }
+
+    @Test
     void shouldDrainFlushMetricsAfterWritesCompleteConcurrently() throws Exception {
         int writeCount = 128;
         FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
@@ -480,6 +503,40 @@ class GreptimeSinkWriterTest {
         RuntimeException thrown = assertThrows(RuntimeException.class, () -> sinkWriter.flush(false));
         assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
         assertSame(failure, thrown.getCause());
+
+        assertEquals(0, sinkWriter.metrics().pendingWrites());
+        assertEquals(0, sinkWriter.pendingWritesSize());
+        assertEquals(1, sinkWriter.metrics().recordsSend());
+        assertEquals(1, sinkWriter.metrics().recordsSendErrors());
+        assertEquals(1, sinkWriter.metrics().flushTotal());
+        assertEquals(0, sinkWriter.metrics().flushSuccessTotal());
+        assertEquals(1, sinkWriter.metrics().flushFailureTotal());
+        assertEquals(1, sinkWriter.metrics().asyncWriteFailureTotal());
+    }
+
+    @Test
+    void shouldRecordCancelledWriteAsFailureWhenDrained() {
+        FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
+        CompletableFuture<Integer> write = new CompletableFuture<>();
+        bulkWriter.enqueueWrite(write);
+        GreptimeSinkWriter<String> sinkWriter = newSinkWriterWithMetrics(bulkWriter, 1);
+
+        sinkWriter.write("first", sinkContext());
+        assertEquals(1, sinkWriter.metrics().pendingWrites());
+        assertEquals(1, sinkWriter.metrics().recordsSend());
+
+        write.cancel(false);
+
+        assertEquals(0, sinkWriter.metrics().pendingWrites());
+        assertEquals(1, sinkWriter.pendingWritesSize());
+        assertEquals(0, sinkWriter.metrics().recordsSendErrors());
+        assertEquals(0, sinkWriter.metrics().flushTotal());
+        assertEquals(0, sinkWriter.metrics().flushFailureTotal());
+        assertEquals(0, sinkWriter.metrics().asyncWriteFailureTotal());
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> sinkWriter.flush(false));
+        assertEquals("Async write to GreptimeDB failed", thrown.getMessage());
+        assertTrue(thrown.getCause() instanceof CancellationException);
 
         assertEquals(0, sinkWriter.metrics().pendingWrites());
         assertEquals(0, sinkWriter.pendingWritesSize());
