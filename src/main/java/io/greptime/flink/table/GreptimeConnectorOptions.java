@@ -145,8 +145,8 @@ final class GreptimeConnectorOptions {
         validatePositive(BULK_ALLOCATOR_MAX_ALLOCATION.key(), bulkAllocatorMaxAllocation);
         if (bulkAllocatorMaxAllocation < bulkAllocatorInitReservation) {
             throw new IllegalArgumentException(
-                    "`bulk.allocator-max-allocation-bytes` must be greater than or equal to "
-                            + "`bulk.allocator-init-reservation-bytes`");
+                    "`" + BULK_ALLOCATOR_MAX_ALLOCATION.key() + "` must be greater than or equal to `"
+                            + BULK_ALLOCATOR_INIT_RESERVATION.key() + "`");
         }
 
         return new GreptimeTableSinkOptions(
