@@ -188,6 +188,10 @@ class GreptimeTableSchemaConverterTest {
                 null,
                 null,
                 tags,
-                GreptimeConnectorOptions.DEFAULT_BATCH_MAX_ROWS);
+                GreptimeConnectorOptions.DEFAULT_BATCH_MAX_ROWS,
+                GreptimeConnectorOptions.DEFAULT_BULK_TIMEOUT_MS_PER_MESSAGE,
+                GreptimeConnectorOptions.DEFAULT_BULK_MAX_REQUESTS_IN_FLIGHT,
+                GreptimeConnectorOptions.DEFAULT_BULK_ALLOCATOR_INIT_RESERVATION,
+                GreptimeConnectorOptions.DEFAULT_BULK_ALLOCATOR_MAX_ALLOCATION);
     }
 }

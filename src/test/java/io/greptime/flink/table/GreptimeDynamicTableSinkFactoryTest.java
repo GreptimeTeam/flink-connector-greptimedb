@@ -41,6 +41,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectOutputStream;
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,6 +70,10 @@ class GreptimeDynamicTableSinkFactoryTest {
         assertTrue(optionalOptions.contains(GreptimeConnectorOptions.PASSWORD));
         assertTrue(optionalOptions.contains(GreptimeConnectorOptions.TAGS));
         assertTrue(optionalOptions.contains(GreptimeConnectorOptions.BATCH_MAX_ROWS));
+        assertTrue(optionalOptions.contains(GreptimeConnectorOptions.BULK_TIMEOUT_MS_PER_MESSAGE));
+        assertTrue(optionalOptions.contains(GreptimeConnectorOptions.BULK_MAX_REQUESTS_IN_FLIGHT));
+        assertTrue(optionalOptions.contains(GreptimeConnectorOptions.BULK_ALLOCATOR_INIT_RESERVATION));
+        assertTrue(optionalOptions.contains(GreptimeConnectorOptions.BULK_ALLOCATOR_MAX_ALLOCATION));
 
         Set<ConfigOption<?>> forwardOptions = factory.forwardOptions();
         assertTrue(forwardOptions.contains(GreptimeConnectorOptions.ENDPOINTS));
@@ -88,6 +93,10 @@ class GreptimeDynamicTableSinkFactoryTest {
         options.put(GreptimeConnectorOptions.PASSWORD.key(), "secret");
         options.put(GreptimeConnectorOptions.TAGS.key(), "host,region");
         options.put(GreptimeConnectorOptions.BATCH_MAX_ROWS.key(), "128");
+        options.put(GreptimeConnectorOptions.BULK_TIMEOUT_MS_PER_MESSAGE.key(), "30000");
+        options.put(GreptimeConnectorOptions.BULK_MAX_REQUESTS_IN_FLIGHT.key(), "4");
+        options.put(GreptimeConnectorOptions.BULK_ALLOCATOR_INIT_RESERVATION.key(), "1024");
+        options.put(GreptimeConnectorOptions.BULK_ALLOCATOR_MAX_ALLOCATION.key(), "2048");
 
         GreptimeDynamicTableSink sink = createSink(options, "identifier_metrics");
         GreptimeTableSinkOptions sinkOptions = sink.options();
@@ -100,6 +109,10 @@ class GreptimeDynamicTableSinkFactoryTest {
         assertEquals("secret", sinkOptions.password());
         assertEquals(List.of("host", "region"), sinkOptions.tags());
         assertEquals(128, sinkOptions.batchMaxRows());
+        assertEquals(30_000L, sinkOptions.bulkTimeoutMsPerMessage());
+        assertEquals(4, sinkOptions.bulkMaxRequestsInFlight());
+        assertEquals(1_024L, sinkOptions.bulkAllocatorInitReservation());
+        assertEquals(2_048L, sinkOptions.bulkAllocatorMaxAllocation());
         assertEquals(ChangelogMode.insertOnly(), sink.getChangelogMode(ChangelogMode.all()));
         assertTrue(sink.getChangelogMode(ChangelogMode.all()).containsOnly(RowKind.INSERT));
     }
@@ -112,6 +125,18 @@ class GreptimeDynamicTableSinkFactoryTest {
         assertEquals("identifier_metrics", sink.options().table());
         assertEquals(List.of(), sink.options().tags());
         assertEquals(GreptimeConnectorOptions.DEFAULT_BATCH_MAX_ROWS, sink.options().batchMaxRows());
+        assertEquals(
+                GreptimeConnectorOptions.DEFAULT_BULK_TIMEOUT_MS_PER_MESSAGE,
+                sink.options().bulkTimeoutMsPerMessage());
+        assertEquals(
+                GreptimeConnectorOptions.DEFAULT_BULK_MAX_REQUESTS_IN_FLIGHT,
+                sink.options().bulkMaxRequestsInFlight());
+        assertEquals(
+                GreptimeConnectorOptions.DEFAULT_BULK_ALLOCATOR_INIT_RESERVATION,
+                sink.options().bulkAllocatorInitReservation());
+        assertEquals(
+                GreptimeConnectorOptions.DEFAULT_BULK_ALLOCATOR_MAX_ALLOCATION,
+                sink.options().bulkAllocatorMaxAllocation());
     }
 
     @Test
@@ -237,6 +262,38 @@ class GreptimeDynamicTableSinkFactoryTest {
     }
 
     @Test
+    void shouldRejectInvalidBulkWriteOptions() {
+        assertOptionError(
+                GreptimeConnectorOptions.BULK_TIMEOUT_MS_PER_MESSAGE.key(),
+                "0",
+                "`bulk.timeout-ms-per-message` must be greater than 0");
+        assertOptionError(
+                GreptimeConnectorOptions.BULK_MAX_REQUESTS_IN_FLIGHT.key(),
+                "0",
+                "`bulk.max-requests-in-flight` must be greater than 0");
+        assertOptionError(
+                GreptimeConnectorOptions.BULK_ALLOCATOR_INIT_RESERVATION.key(),
+                "-1",
+                "`bulk.allocator-init-reservation-bytes` must be greater than or equal to 0");
+        assertOptionError(
+                GreptimeConnectorOptions.BULK_ALLOCATOR_MAX_ALLOCATION.key(),
+                "0",
+                "`bulk.allocator-max-allocation-bytes` must be greater than 0");
+
+        Map<String, String> options = baseOptions();
+        options.put(GreptimeConnectorOptions.BULK_ALLOCATOR_INIT_RESERVATION.key(), "2048");
+        options.put(GreptimeConnectorOptions.BULK_ALLOCATOR_MAX_ALLOCATION.key(), "1024");
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> createSink(options, "metrics"));
+        assertEquals(
+                "`bulk.allocator-max-allocation-bytes` must be greater than or equal to "
+                        + "`bulk.allocator-init-reservation-bytes`",
+                error.getMessage());
+    }
+
+    @Test
     void shouldValidateTimeIndexAgainstSchema() {
         Map<String, String> missingTimeIndex = baseOptions();
         missingTimeIndex.put(GreptimeConnectorOptions.TIME_INDEX.key(), "missing_ts");
@@ -300,11 +357,19 @@ class GreptimeDynamicTableSinkFactoryTest {
         options.put(GreptimeConnectorOptions.PASSWORD.key(), "secret");
         options.put(GreptimeConnectorOptions.TAGS.key(), "host,region");
         options.put(GreptimeConnectorOptions.BATCH_MAX_ROWS.key(), "128");
+        options.put(GreptimeConnectorOptions.BULK_TIMEOUT_MS_PER_MESSAGE.key(), "30000");
+        options.put(GreptimeConnectorOptions.BULK_MAX_REQUESTS_IN_FLIGHT.key(), "4");
+        options.put(GreptimeConnectorOptions.BULK_ALLOCATOR_INIT_RESERVATION.key(), "1024");
+        options.put(GreptimeConnectorOptions.BULK_ALLOCATOR_MAX_ALLOCATION.key(), "2048");
 
         GreptimeDynamicTableSink sink = createSink(options, "metrics");
 
-        assertRuntimeSinkSerializable(sink);
+        Sink<RowData> runtimeSink = assertRuntimeSinkSerializable(sink);
         assertRuntimeSinkSerializable(sink.copy());
+        assertGreptimeSinkField(runtimeSink, "timeoutMsPerMessage", 30_000L);
+        assertGreptimeSinkField(runtimeSink, "maxRequestsInFlight", 4);
+        assertGreptimeSinkField(runtimeSink, "allocatorInitReservation", 1_024L);
+        assertGreptimeSinkField(runtimeSink, "allocatorMaxAllocation", 2_048L);
         assertEquals("GreptimeDB Table Sink", sink.asSummaryString());
     }
 
@@ -319,7 +384,7 @@ class GreptimeDynamicTableSinkFactoryTest {
         assertRuntimeSinkSerializable(sink);
     }
 
-    private static void assertRuntimeSinkSerializable(DynamicTableSink sink) throws Exception {
+    private static Sink<RowData> assertRuntimeSinkSerializable(DynamicTableSink sink) throws Exception {
         SinkV2Provider provider = assertInstanceOf(SinkV2Provider.class, sink.getSinkRuntimeProvider(null));
         Sink<RowData> runtimeSink = provider.createSink();
 
@@ -327,6 +392,13 @@ class GreptimeDynamicTableSinkFactoryTest {
         try (ObjectOutputStream output = new ObjectOutputStream(new ByteArrayOutputStream())) {
             output.writeObject(runtimeSink);
         }
+        return runtimeSink;
+    }
+
+    private static void assertGreptimeSinkField(Object sink, String fieldName, Object expectedValue) throws Exception {
+        Field field = GreptimeSink.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        assertEquals(expectedValue, field.get(sink));
     }
 
     private static void assertOptionError(String key, String value, String expectedMessage) {

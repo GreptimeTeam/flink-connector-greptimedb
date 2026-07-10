@@ -33,6 +33,10 @@ final class GreptimeTableSinkOptions {
     private final String password;
     private final List<String> tags;
     private final int batchMaxRows;
+    private final long bulkTimeoutMsPerMessage;
+    private final int bulkMaxRequestsInFlight;
+    private final long bulkAllocatorInitReservation;
+    private final long bulkAllocatorMaxAllocation;
 
     GreptimeTableSinkOptions(
             List<String> endpoints,
@@ -42,7 +46,11 @@ final class GreptimeTableSinkOptions {
             String username,
             String password,
             List<String> tags,
-            int batchMaxRows) {
+            int batchMaxRows,
+            long bulkTimeoutMsPerMessage,
+            int bulkMaxRequestsInFlight,
+            long bulkAllocatorInitReservation,
+            long bulkAllocatorMaxAllocation) {
         this.endpoints = copy(endpoints);
         this.timeIndex = Objects.requireNonNull(timeIndex, "timeIndex must not be null");
         this.database = Objects.requireNonNull(database, "database must not be null");
@@ -51,6 +59,10 @@ final class GreptimeTableSinkOptions {
         this.password = password;
         this.tags = copy(tags);
         this.batchMaxRows = batchMaxRows;
+        this.bulkTimeoutMsPerMessage = bulkTimeoutMsPerMessage;
+        this.bulkMaxRequestsInFlight = bulkMaxRequestsInFlight;
+        this.bulkAllocatorInitReservation = bulkAllocatorInitReservation;
+        this.bulkAllocatorMaxAllocation = bulkAllocatorMaxAllocation;
     }
 
     List<String> endpoints() {
@@ -83,6 +95,22 @@ final class GreptimeTableSinkOptions {
 
     int batchMaxRows() {
         return batchMaxRows;
+    }
+
+    long bulkTimeoutMsPerMessage() {
+        return bulkTimeoutMsPerMessage;
+    }
+
+    int bulkMaxRequestsInFlight() {
+        return bulkMaxRequestsInFlight;
+    }
+
+    long bulkAllocatorInitReservation() {
+        return bulkAllocatorInitReservation;
+    }
+
+    long bulkAllocatorMaxAllocation() {
+        return bulkAllocatorMaxAllocation;
     }
 
     private static <T> List<T> copy(List<T> values) {

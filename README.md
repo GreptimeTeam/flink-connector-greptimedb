@@ -95,6 +95,10 @@ INSERT INTO cpu_metrics VALUES
 | `password` | No | GreptimeDB password. Configure together with `username`. |
 | `tags` | No | Comma-separated column names to write as GreptimeDB tag columns. |
 | `batch.max-rows` | No | Maximum rows per write batch. Defaults to `1000`. |
+| `bulk.timeout-ms-per-message` | No | Timeout in milliseconds for each bulk write message. Defaults to `60000`. |
+| `bulk.max-requests-in-flight` | No | Maximum in-flight requests for the bulk stream. Defaults to `8`. |
+| `bulk.allocator-init-reservation-bytes` | No | Initial Arrow allocator reservation in bytes. Defaults to `0`. |
+| `bulk.allocator-max-allocation-bytes` | No | Maximum Arrow allocator allocation in bytes. Defaults to `1073741824`. |
 
 #### Delivery Guarantee
 
