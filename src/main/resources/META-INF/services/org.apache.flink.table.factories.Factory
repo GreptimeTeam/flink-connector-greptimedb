@@ -1,1 +1,2 @@
 io.greptime.flink.table.GreptimeDynamicTableSinkFactory
+io.greptime.flink.source.GreptimeDynamicTableSourceFactory

@@ -1,6 +1,6 @@
 # GreptimeDB Apache Flink Connector
 
-`flink-connector-greptimedb` is a reusable Apache Flink sink connector for writing application records into GreptimeDB.
+`flink-connector-greptimedb` provides Apache Flink connectors for writing records to GreptimeDB and reading bounded tables through Flink SQL.
 
 ## Maven Dependency
 
@@ -13,6 +13,55 @@
 ```
 
 ## Usage
+
+### SQL/Table Source Usage
+
+The SQL/Table source performs a bounded, single-task scan through the GreptimeDB MySQL protocol.
+
+```sql
+CREATE TEMPORARY TABLE cpu_metrics_source (
+    ts TIMESTAMP(3),
+    host STRING,
+    usage DOUBLE,
+    observed_on DATE
+) WITH (
+    'connector' = 'greptimedb',
+    'query.jdbc-url' = 'jdbc:mysql://127.0.0.1:4002/public?useSSL=false',
+    'database' = 'public',
+    'table' = 'cpu_metrics',
+    'query.fetch-size' = '1000'
+);
+
+SELECT ts, host, usage, observed_on FROM cpu_metrics_source;
+```
+
+The connector artifact does not include MySQL Connector/J. Add the driver separately to every Flink SQL Client or cluster runtime that executes the source. For example:
+
+```bash
+./bin/sql-client.sh embedded \
+    -j /path/to/flink-connector-greptimedb-${version}-shaded.jar \
+    -j /path/to/mysql-connector-j-8.4.0.jar
+```
+
+#### SQL/Table Source Options
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `connector` | Yes | Must be `greptimedb`. |
+| `query.jdbc-url` | Yes | GreptimeDB MySQL JDBC URL. It must not contain credentials, authentication tokens, password-bearing properties, `connectTimeout`, or `socketTimeout`. |
+| `database` | No | GreptimeDB database. Defaults to `public`. |
+| `table` | No | GreptimeDB table name. Defaults to the Flink table identifier. |
+| `username` | No | GreptimeDB username. Configure together with `password`. |
+| `password` | No | GreptimeDB password. Configure together with `username`. |
+| `query.connect-timeout-ms` | No | JDBC connection timeout in milliseconds. Defaults to `10000`. |
+| `query.socket-timeout-ms` | No | JDBC socket timeout in milliseconds. Defaults to `300000`. |
+| `query.fetch-size` | No | JDBC statement fetch-size hint. Must be non-negative and defaults to `0`. |
+
+Supported source column types are `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `CHAR`, `VARCHAR`/`STRING`, `BINARY`, `VARBINARY`, `DATE`, `DECIMAL`, and `TIMESTAMP` without a time zone.
+
+`query.fetch-size` is passed to the JDBC statement only when it is positive. Connector/J cursor fetching also depends on driver settings such as `useCursorFetch=true` in the JDBC URL; this connector does not modify the URL automatically.
+
+The source does not currently support projection, filter, or limit pushdown, lookup reads, streaming reads, CDC, `TIMESTAMP_LTZ`, metadata discovery, or schema preflight. It always produces insert-only rows and does not create GreptimeDB tables.
 
 ### DataStream Sink Usage
 
@@ -109,7 +158,6 @@ The connector does not provide an exactly-once commit protocol.
 
 The SQL/Table connector currently does not support:
 
-* SQL/Table source
 * Lookup source
 * CDC or streaming source
 * Update, delete, or retract changelog rows
@@ -157,6 +205,12 @@ To run only the GreptimeDB SQL/Table sink integration test:
 mvn -Pintegration-test -Dit.test=GreptimeDynamicTableSinkIT verify
 ```
 
+To run only the GreptimeDB SQL/Table source integration test:
+
+```bash
+mvn -Pintegration-test -Dit.test=GreptimeDynamicTableSourceIT verify
+```
+
 To test against a different GreptimeDB image:
 
 ```bash
@@ -168,3 +222,4 @@ mvn -Pintegration-test verify -Dgreptimedb.test.image=greptime/greptimedb:latest
 * Java 17
 * Apache Flink 2.0.x
 * GreptimeDB Java ingester 0.15.0
+* MySQL Connector/J 8.4.x for SQL/Table source reads
