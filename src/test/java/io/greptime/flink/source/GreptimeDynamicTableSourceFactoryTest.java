@@ -214,6 +214,9 @@ class GreptimeDynamicTableSourceFactoryTest {
                 "jdbc:mysql://reader:secret@127.0.0.1:4002/public",
                 sensitiveMessage);
         assertDeferredUrlError(
+                "jdbc:mysql://reader:secret%40127.0.0.1:4002/public",
+                sensitiveMessage);
+        assertDeferredUrlError(
                 "jdbc:mysql://(host=127.0.0.1,port=4002,password=secret)/public",
                 sensitiveMessage);
         assertDeferredUrlError(

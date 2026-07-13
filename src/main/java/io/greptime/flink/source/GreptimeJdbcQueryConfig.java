@@ -207,8 +207,8 @@ final class GreptimeJdbcQueryConfig implements Serializable {
         }
         authorityStart += 3;
         int authorityEnd = authorityEnd(jdbcUrl, authorityStart);
-        int userInfoEnd = jdbcUrl.lastIndexOf('@', authorityEnd - 1);
-        return userInfoEnd >= authorityStart;
+        String authority = decodeUrlComponent(jdbcUrl.substring(authorityStart, authorityEnd));
+        return authority.indexOf('@') >= 0;
     }
 
     private static int authorityEnd(String jdbcUrl, int authorityStart) {

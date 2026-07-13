@@ -59,6 +59,15 @@ class GreptimeDynamicTableSourceSecurityIT {
                 "credentials or authentication tokens");
     }
 
+    @Test
+    void shouldNotExposeEncodedAuthorityUserInfoThroughFlinkFactoryErrors() throws Exception {
+        assertSanitizedFailure(
+                "encoded_authority_user_info_source",
+                "jdbc:mysql://reader:" + SECRET + "%40127.0.0.1:4002/public",
+                ", 'query.fetch-size' = 'invalid'",
+                "credentials or authentication tokens");
+    }
+
     private static void assertSanitizedFailure(
             String tableName,
             String jdbcUrl,
