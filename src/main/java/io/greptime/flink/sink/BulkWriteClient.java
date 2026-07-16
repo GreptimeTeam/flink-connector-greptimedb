@@ -22,6 +22,7 @@ import io.greptime.BulkStreamWriter;
 import io.greptime.models.Table;
 
 import java.util.Objects;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -29,6 +30,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -69,14 +71,33 @@ final class BulkWriteClient {
         if (hasOpenStream()) {
             return;
         }
-        Future<BulkStreamWriter> opening = executor.submit(writerFactory::create);
+
+        AtomicBoolean cancelled = new AtomicBoolean();
+        Callable<Void> openTask = () -> {
+            BulkStreamWriter openedWriter = writerFactory.create();
+            boolean shouldClose;
+            synchronized (this) {
+                if (cancelled.get()) {
+                    shouldClose = true;
+                } else {
+                    setWriter(openedWriter);
+                    shouldClose = false;
+                }
+            }
+            if (shouldClose) {
+                closeWriterQuietly(openedWriter);
+            }
+            return null;
+        };
+        Future<Void> opening = executor.submit(openTask);
         try {
-            BulkStreamWriter opened = opening.get(timeoutMs, TimeUnit.MILLISECONDS);
-            setWriter(opened);
+            opening.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
+            cancelled.set(true);
             opening.cancel(true);
             throw newStreamOpenTimeoutException(timeoutMs);
         } catch (InterruptedException e) {
+            cancelled.set(true);
             opening.cancel(true);
             Thread.currentThread().interrupt();
             throw e;
@@ -142,8 +163,16 @@ final class BulkWriteClient {
     }
 
     void shutdown() {
-        executor.shutdownNow();
-        shutdownClient.run();
+        try {
+            closeStream();
+        } catch (Exception ignored) {
+            // The stream may already be broken (timed-out, cancelled, or already
+            // closed). Whether closeStream succeeds or fails, the executor and
+            // the underlying client must still be shut down.
+        } finally {
+            executor.shutdownNow();
+            shutdownClient.run();
+        }
     }
 
     private synchronized BulkStreamWriter currentWriter() {
@@ -174,6 +203,18 @@ final class BulkWriteClient {
             closeStream();
         } catch (Exception e) {
             cause.addSuppressed(e);
+        }
+    }
+
+    private static void closeWriterQuietly(BulkStreamWriter writer) {
+        try {
+            writer.close();
+        } catch (Exception ignored) {
+            // The writer is being discarded because the stream-open operation
+            // already timed out. Its close may fail due to the same underlying
+            // issue (unreachable server, broken gRPC channel), and there is no
+            // caller to propagate the exception to. Swallow it so the executor
+            // task can exit cleanly.
         }
     }
 

@@ -129,6 +129,9 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         try {
             client.ensureStreamOpen(timeoutMsPerMessage);
         } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             recordAsyncWriteFailure(e);
             throw asyncWriteFailureException(e);
         }
@@ -147,6 +150,9 @@ final class GreptimeSinkWriter<T> implements SinkWriter<T> {
         try {
             client.completed(timeoutMsPerMessage);
         } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             recordAsyncWriteFailure(e);
             throw asyncWriteFailureException(e);
         }

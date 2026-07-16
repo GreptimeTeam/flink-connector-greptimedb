@@ -102,7 +102,7 @@ class BulkWriteClientTest {
         testThread.join(5_000);
 
         assertTrue(caught.get() instanceof InterruptedException);
-        assertTrue(testThread.isInterrupted() || caught.get() instanceof InterruptedException);
+        assertTrue(testThread.isInterrupted());
         assertTrue(factory.createAttempted);
     }
 
