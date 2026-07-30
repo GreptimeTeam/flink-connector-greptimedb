@@ -23,7 +23,7 @@ under the License.
 
     <groupId>io.greptime</groupId>
     <artifactId>flink-connector-greptimedb</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>GreptimeDB Apache Flink Connector</name>
