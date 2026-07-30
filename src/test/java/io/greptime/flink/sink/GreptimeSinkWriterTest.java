@@ -46,6 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GreptimeSinkWriterTest {
 
+    private static final long DEFAULT_TIMEOUT_MS = 10_000;
+
     @Test
     void shouldFailSubsequentWriteAfterAsyncWriteFails() {
         FakeBulkStreamWriter bulkWriter = new FakeBulkStreamWriter();
@@ -183,6 +185,7 @@ class GreptimeSinkWriterTest {
                     return new Object[] { value };
                 },
                 2,
+                DEFAULT_TIMEOUT_MS,
                 () -> {
                 });
         CountDownLatch completedStarted = new CountDownLatch(1);
@@ -560,6 +563,7 @@ class GreptimeSinkWriterTest {
                 writerFactory,
                 value -> new Object[] { value },
                 batchSize,
+                DEFAULT_TIMEOUT_MS,
                 () -> {
                 });
     }
@@ -572,6 +576,7 @@ class GreptimeSinkWriterTest {
                 new SingleBulkStreamWriterFactory(bulkWriter),
                 value -> new Object[] { value },
                 batchSize,
+                DEFAULT_TIMEOUT_MS,
                 shutdownGreptimeDb);
     }
 
@@ -582,6 +587,7 @@ class GreptimeSinkWriterTest {
                 new SingleBulkStreamWriterFactory(bulkWriter),
                 value -> new Object[] { value },
                 batchSize,
+                DEFAULT_TIMEOUT_MS,
                 () -> {
                 },
                 sinkWriterMetricGroup());
@@ -621,7 +627,7 @@ class GreptimeSinkWriterTest {
         assertEquals(Thread.State.BLOCKED, thread.getState());
     }
 
-    private static final class RecordingBulkStreamWriterFactory implements GreptimeSinkWriter.BulkStreamWriterFactory {
+    private static final class RecordingBulkStreamWriterFactory implements BulkWriteClient.BulkStreamWriterFactory {
 
         private final List<FakeBulkStreamWriter> writers = new ArrayList<>();
 
@@ -633,7 +639,7 @@ class GreptimeSinkWriterTest {
         }
     }
 
-    private static final class SingleBulkStreamWriterFactory implements GreptimeSinkWriter.BulkStreamWriterFactory {
+    private static final class SingleBulkStreamWriterFactory implements BulkWriteClient.BulkStreamWriterFactory {
 
         private final FakeBulkStreamWriter writer;
 

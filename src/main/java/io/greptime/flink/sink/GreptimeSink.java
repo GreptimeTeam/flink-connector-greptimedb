@@ -97,10 +97,11 @@ public final class GreptimeSink<T> implements Sink<T> {
                 .build();
 
         return new GreptimeSinkWriter<>(
-                greptimeDb,
                 () -> greptimeDb.bulkStreamWriter(tableSchema.toTableSchema(), bulkWriteConfig),
                 recordSerializer,
                 batchSize,
+                timeoutMsPerMessage,
+                greptimeDb::shutdownGracefully,
                 context.metricGroup());
     }
 
